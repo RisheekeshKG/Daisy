@@ -1,0 +1,19 @@
+node_modules/
+build/
+dist/
+release/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example
+
+# Python backend
+backend/.venv/
+backend/__pycache__/
+**/__pycache__/
+*.pyc
+
+# Piper TTS voice models + faster-whisper STT model (downloaded via `npm run backend:setup`)
+backend/voices/
+backend/whisper-model/
