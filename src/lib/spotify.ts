@@ -99,6 +99,41 @@ export const spotify = {
     request<{ ok: boolean }>("/shuffle", { method: "PUT", body: JSON.stringify({ state }) }),
   transfer: (deviceId: string, play = true) =>
     request<{ ok: boolean }>("/transfer", { method: "PUT", body: JSON.stringify({ deviceId, play }) }),
+  /** Repeat mode: "off" | "context" (playlist/album) | "track". */
+  setRepeat: (mode: "off" | "context" | "track") =>
+    request<{ ok: boolean; mode: string }>("/repeat", {
+      method: "PUT",
+      body: JSON.stringify({ mode }),
+    }),
+
+  /** Jump to an absolute position in the current track. */
+  seek: (positionMs: number) =>
+    request<{ ok: boolean; positionMs: number }>("/seek", {
+      method: "PUT",
+      body: JSON.stringify({ positionMs }),
+    }),
+
+  /** Move forward/back relative to the current position (negative rewinds). */
+  seekBy: (relativeMs: number) =>
+    request<{ ok: boolean; positionMs: number }>("/seek", {
+      method: "PUT",
+      body: JSON.stringify({ relativeMs }),
+    }),
+
+  /** Queue a song to play next, by name or URI. */
+  queue: (query: string) =>
+    request<{ ok: boolean; name: string | null }>("/queue", {
+      method: "POST",
+      body: JSON.stringify({ query }),
+    }),
+
+  /** Like (or unlike) the track that's playing. Needs user-library-modify. */
+  saveCurrent: (save = true) =>
+    request<{ ok: boolean; saved: boolean }>("/save", {
+      method: "PUT",
+      body: JSON.stringify({ save }),
+    }),
+
   logout: () => request<{ ok: boolean }>("/logout", { method: "POST" }),
 
   /**

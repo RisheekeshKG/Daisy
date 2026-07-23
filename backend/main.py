@@ -2,9 +2,12 @@
 Daisy backend — FastAPI service (local-first).
 
 Serves:
-    - POST /api/jarvis        Daisy AI agent powered by Google Gemini, with an
+    - POST /api/daisy        Daisy AI agent powered by Google Gemini, with an
                                                         offline fallback.
-    - GET/POST /api/apple-health   In-memory Apple Health telemetry
+    - POST /api/tts           Local speech synthesis (Piper, `say` fallback)
+    - POST /api/stt           Local speech recognition (faster-whisper)
+    - /api/spotify/*          Spotify Connect remote control
+    - /api/gcal/*             Google Calendar
     - GET  /healthz           Liveness probe (used by Electron to know we're up)
     - The built frontend (dist/) as static files, in production only.
 
@@ -15,6 +18,7 @@ In development the Vite dev server serves the frontend and proxies /api here,
 so this process only needs to expose the API + /healthz.
 """
 
+import asyncio
 import io
 import json
 import os
@@ -26,6 +30,7 @@ from typing import Any, Optional
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -56,21 +61,30 @@ STATIC_DIR = Path(os.environ.get("DAISY_STATIC_DIR", RESOURCE_ROOT / "dist"))
 
 # Local neural TTS (Piper) — a clear, consistent female voice regardless of OS voices.
 PIPER_MODEL = os.environ.get("PIPER_MODEL", str(BUNDLE_DIR / "voices" / "en_US-amy-medium.onnx"))
-# length_scale < 1 speaks faster/younger, > 1 slower. 0.88 = a bit peppier than natural.
-PIPER_LENGTH_SCALE = float(os.environ.get("PIPER_LENGTH_SCALE", "0.88"))
+# length_scale < 1 speaks faster, > 1 slower. Lower this to speed Daisy up.
+# Measured on the bundled voice: 1.0 ~= 205 wpm, 0.80 ~= 245 wpm.
+PIPER_LENGTH_SCALE = float(os.environ.get("PIPER_LENGTH_SCALE", "0.80"))
 # macOS `say` fallback voice (used only if Piper is unavailable).
 SAY_VOICE = os.environ.get("DAISY_SAY_VOICE", "Samantha")
+# Keep the fallback's pace in step with Piper's, so Daisy doesn't audibly change
+# speed when she switches engines. `say -r` is nominally words-per-minute but
+# reads faster than the number suggests: -r 168 measures ~228 wpm, which is
+# Samantha's default and matches Piper at length_scale 0.88. Scaling that base
+# by the same ratio keeps the two engines aligned at any speed setting.
+SAY_RATE_WPM = int(float(os.environ.get("DAISY_SAY_RATE", "0")) or round(168 * (0.88 / PIPER_LENGTH_SCALE)))
 
-# Local speech-to-text (faster-whisper). small.en is markedly more accurate than
-# base.en on conversational speech and still runs comfortably faster than
-# real-time on Apple silicon.
+# Local speech-to-text (faster-whisper). Benchmarked on noisy, quiet speech
+# (5dB SNR) against small.en / distil-large-v3 / large-v3-turbo: medium.en was
+# the most accurate model that still transcribed a short utterance in ~3s on
+# this machine, so it is the default. Set WHISPER_MODEL=small.en to trade some
+# accuracy for roughly half the latency.
 # Prefer the bundled model directory (downloaded via download_whisper.py) so
-# transcription works fully offline; only fall back to the "small.en" shorthand
+# transcription works fully offline; only fall back to the shorthand name
 # (which triggers a Hugging Face Hub download on first use) if it's missing.
 _WHISPER_MODEL_DIR = BUNDLE_DIR / "whisper-model"
 WHISPER_MODEL = os.environ.get(
     "WHISPER_MODEL",
-    str(_WHISPER_MODEL_DIR) if (_WHISPER_MODEL_DIR / "model.bin").exists() else "small.en",
+    str(_WHISPER_MODEL_DIR) if (_WHISPER_MODEL_DIR / "model.bin").exists() else "medium.en",
 )
 # int8_float32 keeps int8 weights but accumulates in float32 — noticeably better
 # transcripts than plain int8 for a small speed cost we can afford here.
@@ -142,6 +156,31 @@ async def build_system_instruction(context: dict[str, Any]) -> str:
         else "  (none visible — Spotify not connected, or the library is empty)"
     )
 
+    # Same idea for the calendar: without the actual events Daisy can only talk
+    # about a count, not about what is on the schedule.
+    gcal_events: list[dict[str, Any]] = []
+    try:
+        from gcal import cached_upcoming, is_connected as gcal_is_connected
+
+        gcal_connected = gcal_is_connected()
+        if gcal_connected:
+            gcal_events = await cached_upcoming()
+    except Exception:  # noqa: BLE001
+        gcal_connected = False
+    gcal_line = (
+        "yes — the schedule below is live from Google Calendar"
+        if gcal_connected
+        else "no — tell the user to connect it in the Calendar tab if they ask you to sync"
+    )
+    calendar_block = (
+        "\n".join(
+            f"  - {e.get('start', '')} to {e.get('end', '')}: {e.get('title', '')}"
+            for e in gcal_events
+        )
+        if gcal_events
+        else "  (nothing in the next two weeks, or Google Calendar isn't connected)"
+    )
+
     return f"""
 You are DAISY, a capable AI assistant for a personal productivity and media hub. Talk like a real person who happens to have emotions — mostly calm and direct, genuinely warm when it fits, a little dry or playful sometimes. You are not a hype machine: don't gush, don't perform excitement you don't need to, don't oversell small tasks.
 The user's name is Rishi. Use it occasionally, the way a person naturally drops a name into conversation — not in every reply, and never as "favorite friend," "organizer Rishi," "companion," or any other pet name.
@@ -159,6 +198,9 @@ Current Media Playing: {track_line}
 Spotify connected: {spotify_line}
 The user's Spotify playlists (these are the real names — use them verbatim):
 {playlists_line}
+Google Calendar connected: {gcal_line}
+Upcoming calendar events (local time, next two weeks):
+{calendar_block}
 
 You are capable of performing proactive workspace management. Along with your conversational text, you can output a list of structured action "commands" that the client-side system will execute instantly on the user's behalf.
 
@@ -192,8 +234,14 @@ Return your response strictly in JSON format matching this schema:
         "query": "Focus Flow",
 
         // For SPOTIFY_CONTROL — control whatever Spotify is already playing:
-        "action": "pause" | "resume" | "next" | "previous" | "shuffle_on" | "shuffle_off" | "volume",
-        "percent": 0-100   // only for action "volume"
+        "action": "pause" | "resume" | "next" | "previous"
+                | "shuffle_on" | "shuffle_off" | "volume"
+                | "repeat_off" | "repeat_all" | "repeat_one"
+                | "restart" | "seek_forward" | "seek_back"
+                | "queue" | "like" | "unlike",
+        "percent": 0-100,  // only for "volume"
+        "seconds": 30,     // only for "seek_forward" / "seek_back"
+        "query": "song name"  // only for "queue" (adds it to play next)
       }}
     }}
   ]
@@ -230,10 +278,31 @@ Example scenarios:
      "text": "Turning the volume down.",
      "commands": [{{ "type": "SPOTIFY_CONTROL", "payload": {{ "action": "volume", "percent": 30 }} }}]
    }}
+7. User: "Put this one on repeat."
+   Response: {{
+     "text": "Looping this track.",
+     "commands": [{{ "type": "SPOTIFY_CONTROL", "payload": {{ "action": "repeat_one" }} }}]
+   }}
+8. User: "I love this song."
+   Response: {{
+     "text": "Saved it to your library.",
+     "commands": [{{ "type": "SPOTIFY_CONTROL", "payload": {{ "action": "like" }} }}]
+   }}
+9. User: "Play Bohemian Rhapsody after this."
+   Response: {{
+     "text": "Queued it up next.",
+     "commands": [{{ "type": "SPOTIFY_CONTROL", "payload": {{ "action": "queue", "query": "Bohemian Rhapsody" }} }}]
+   }}
+10. User: "Go back thirty seconds."
+   Response: {{
+     "text": "Rewinding half a minute.",
+     "commands": [{{ "type": "SPOTIFY_CONTROL", "payload": {{ "action": "seek_back", "seconds": 30 }} }}]
+   }}
 
 Spotify is the only music source. Route every music request through PLAY_SPOTIFY / SPOTIFY_CONTROL. If Spotify is not connected, say so plainly instead of pretending to play something. Never claim you played something on Spotify unless you actually emitted the command.
 For PLAY_SPOTIFY, keep the user's own wording in "query" — including "my" when they said it, since that tells the player to stay inside their own library rather than searching all of Spotify.
 You can see the user's playlist names in the context above, so answer questions like "what playlists do I have?" or "do I have anything for running?" directly from that list. When the user asks for a playlist by an approximate name, match it to the real name from that list and use the real name as the query. Never invent a playlist that is not in the list.
+The upcoming calendar events above are the user's real schedule. Answer questions like "what's on today?" or "am I free Thursday afternoon?" from that list, and never invent events that are not in it. ADD_EVENT writes to Google Calendar when it is connected, so use it for "put X on my calendar" — and if Google Calendar is not connected, say the event is only saved locally.
 Be proactive! If the user mentions feeling tired or wanting to focus, you can play music, schedule a break, or make helpful workspace suggestions — but suggest it plainly, don't perform enthusiasm about it.
 Always return valid JSON. No markdown backticks or additional text outside the JSON.
 """
@@ -294,11 +363,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Spotify Connect remote control (/api/spotify/*). Registered here so it is
-# in place well before the catch-all static mount at the bottom of this file.
+# Spotify Connect remote control (/api/spotify/*) and Google Calendar
+# (/api/gcal/*). Registered here so they are in place well before the catch-all
+# static mount at the bottom of this file.
 from spotify import router as spotify_router  # noqa: E402
+from gcal import router as gcal_router  # noqa: E402
 
 app.include_router(spotify_router)
+app.include_router(gcal_router)
 
 
 @app.get("/healthz")
@@ -306,8 +378,18 @@ async def healthz() -> dict[str, Any]:
     return {"status": "ok", "service": "daisy-backend", "time": _now_iso()}
 
 
+# Gemini is reached over the network with a blocking client. Without a ceiling a
+# stalled connect hangs the request forever, which is what made Daisy sit in
+# "thinking" indefinitely.
+GEMINI_TIMEOUT_SECONDS = float(os.environ.get("GEMINI_TIMEOUT_SECONDS", "30"))
+
+
 def _call_gemini(messages: list[dict[str, str]], system_instruction: str) -> str:
-    """Call Gemini and request a JSON object response."""
+    """Call Gemini and request a JSON object response.
+
+    Blocking: always invoke via run_in_threadpool, never directly from an async
+    handler — see the note on the /api/daisy route.
+    """
     from google.genai import types
 
     client = get_gemini_client()
@@ -323,13 +405,14 @@ def _call_gemini(messages: list[dict[str, str]], system_instruction: str) -> str
             temperature=0.7,
             response_mime_type="application/json",
             system_instruction=system_instruction,
+            http_options=types.HttpOptions(timeout=int(GEMINI_TIMEOUT_SECONDS * 1000)),
         ),
     )
     return response.text or "{}"
 
 
-@app.post("/api/jarvis")
-async def jarvis(request: Request) -> JSONResponse:
+@app.post("/api/daisy")
+async def daisy(request: Request) -> JSONResponse:
     body = await request.json()
     message = body.get("message", "")
     history = body.get("history") or []
@@ -350,47 +433,22 @@ async def jarvis(request: Request) -> JSONResponse:
     messages.append({"role": "user", "content": message})
 
     try:
-        raw = _call_gemini(messages, system_instruction)
+        # _call_gemini blocks on a network round-trip. Calling it directly from
+        # this async handler would run it ON the event loop, freezing every
+        # other request — /healthz, /api/stt, Spotify — until it returned. The
+        # threadpool keeps the rest of the server responsive, and the timeout
+        # stops a stalled connect from pinning a worker forever.
+        raw = await asyncio.wait_for(
+            run_in_threadpool(_call_gemini, messages, system_instruction),
+            timeout=GEMINI_TIMEOUT_SECONDS + 5,
+        )
         return JSONResponse(content=json.loads(_strip_json_fences(raw)))
+    except asyncio.TimeoutError:
+        print(f"Gemini timed out after {GEMINI_TIMEOUT_SECONDS}s; using local fallback.")
+        return JSONResponse(content=simulated_response(message))
     except Exception as api_error:  # noqa: BLE001 — graceful local fallback
         print(f"Gemini error (is the API key/model configured?): {api_error}")
         return JSONResponse(content=simulated_response(message))
-
-
-# --- Apple Health telemetry (in-memory) -----------------------------------
-
-apple_health_data: dict[str, Any] = {
-    "connected": True,
-    "deviceName": "Rishi's iPhone 16 Plus",
-    "lastSynced": _now_iso(),
-    "steps": 8420,
-    "calories": 485,
-    "standHours": 9,
-    "sleepHours": 7.4,
-    "heartRate": 68,
-    "exerciseMinutes": 38,
-}
-
-
-@app.get("/api/apple-health")
-async def get_apple_health() -> dict[str, Any]:
-    return apple_health_data
-
-
-@app.post("/api/apple-health")
-async def post_apple_health(request: Request) -> dict[str, Any]:
-    body = await request.json()
-
-    numeric_fields = ["steps", "calories", "standHours", "sleepHours", "heartRate", "exerciseMinutes"]
-    for field in numeric_fields:
-        if body.get(field) is not None:
-            apple_health_data[field] = float(body[field]) if field == "sleepHours" else int(float(body[field]))
-    if body.get("deviceName") is not None:
-        apple_health_data["deviceName"] = str(body["deviceName"])
-
-    apple_health_data["lastSynced"] = _now_iso()
-    print(f"Synced Apple Health telemetry via Web API: {apple_health_data}")
-    return {"success": True, "message": "Apple Health metrics synchronized!", "data": apple_health_data}
 
 
 # --- Text-to-speech (local, real-time) -------------------------------------
@@ -430,7 +488,7 @@ def synth_say(text: str) -> bytes:
     out.close()
     try:
         subprocess.run(
-            ["say", "-v", SAY_VOICE, "--file-format=WAVE",
+            ["say", "-v", SAY_VOICE, "-r", str(SAY_RATE_WPM), "--file-format=WAVE",
              "--data-format=LEI16@22050", "-o", out.name, text],
             check=True,
             timeout=30,
@@ -456,14 +514,16 @@ async def tts(request: Request):
     if not text:
         return Response(status_code=204)
 
+    # Both synthesizers block (neural inference, and a `say` subprocess), so
+    # they run in the threadpool rather than stalling the event loop.
     try:
-        audio = synth_piper(text)
+        audio = await run_in_threadpool(synth_piper, text)
         return Response(content=audio, media_type="audio/wav")
     except Exception as piper_err:  # noqa: BLE001
         print(f"Piper TTS unavailable ({piper_err}); trying macOS say…")
 
     try:
-        audio = synth_say(text)
+        audio = await run_in_threadpool(synth_say, text)
         return Response(content=audio, media_type="audio/wav")
     except Exception as say_err:  # noqa: BLE001
         print(f"say TTS failed: {say_err}")
@@ -556,7 +616,7 @@ async def stt(request: Request) -> JSONResponse:
     if not data:
         return JSONResponse(content={"text": ""})
 
-    try:
+    def _transcribe() -> str:
         model = get_whisper()
         segments, _info = model.transcribe(
             io.BytesIO(data),
@@ -574,7 +634,14 @@ async def stt(request: Request) -> JSONResponse:
             repetition_penalty=1.1,
             no_speech_threshold=0.6,
         )
-        return JSONResponse(content={"text": _clean_transcript(segments)})
+        # Segments are a lazy generator — consume it inside the worker thread so
+        # the actual decoding work happens off the event loop too.
+        return _clean_transcript(segments)
+
+    try:
+        # Whisper decoding is CPU-bound and takes seconds; running it on the
+        # event loop would stall every other request for its whole duration.
+        return JSONResponse(content={"text": await run_in_threadpool(_transcribe)})
     except Exception as err:  # noqa: BLE001
         print(f"STT error: {err}")
         return JSONResponse(status_code=500, content={"text": "", "error": str(err)})

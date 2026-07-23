@@ -16,6 +16,9 @@ export interface Note {
 
 export interface CalendarEvent {
   id: string;
+  /** Set when this event is mirrored in Google Calendar; the link between the
+   *  local copy and the remote one. Absent for local-only events. */
+  googleId?: string;
   title: string;
   start: string; // YYYY-MM-DDTHH:MM
   end: string;   // YYYY-MM-DDTHH:MM
@@ -32,7 +35,7 @@ export interface CalendarEvent {
 
 export interface ChatMessage {
   id: string;
-  role: "user" | "jarvis";
+  role: "user" | "daisy";
   text: string;
   timestamp: string;
   commands?: Array<{

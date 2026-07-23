@@ -68,6 +68,34 @@ function waitForServer(url, timeoutMs = 120000) {
   });
 }
 
+/** Absolute path to the app icon PNG, or "" when it hasn't been generated.
+ *
+ * build/icon.png is listed in package.json "files", so it sits under the app
+ * path in both dev (project root) and packaged builds (inside app.asar).
+ */
+function appIconPath() {
+  const candidate = path.join(app.getAppPath(), "build", "icon.png");
+  return fs.existsSync(candidate) ? candidate : "";
+}
+
+/** Resolve true if something is already serving the API port. */
+function isPortInUse(port) {
+  return new Promise((resolve) => {
+    const req = http.get(
+      { host: "127.0.0.1", port, path: "/healthz", timeout: 1000 },
+      (res) => {
+        res.resume();
+        resolve(true);
+      }
+    );
+    req.on("error", () => resolve(false));
+    req.on("timeout", () => {
+      req.destroy();
+      resolve(false);
+    });
+  });
+}
+
 /** Spawn the FastAPI backend (uvicorn). Runs in both dev and production. */
 function startBackend() {
   const appPath = app.getAppPath();
@@ -110,12 +138,52 @@ function startBackend() {
     );
   }
 
-  backendProcess.on("error", (err) => {
+  const child = backendProcess;
+  child.on("error", (err) => {
     console.error("Failed to launch Daisy backend. Check the packaged binary or Python venv setup.", err);
   });
-  backendProcess.on("exit", (code) => {
-    console.error(`Daisy backend exited with code ${code}`);
+  child.on("exit", (code, signal) => {
+    console.error(`Daisy backend exited (code ${code}, signal ${signal ?? "none"})`);
+    // Only supervise the process we currently own: stopBackend() clears
+    // backendProcess first, so a deliberate shutdown never triggers a restart.
+    if (backendProcess === child) {
+      backendProcess = null;
+      scheduleBackendRestart();
+    }
   });
+}
+
+// Restart backoff state. The backend dying mid-session used to leave the UI
+// permanently talking to a closed port (every /api call refused) with no way
+// back short of quitting, so bring it back automatically.
+let backendRestarts = 0;
+let backendRestartTimer = null;
+const MAX_BACKEND_RESTARTS = 5;
+
+function scheduleBackendRestart() {
+  if (shuttingDown || backendRestartTimer) return;
+  if (backendRestarts >= MAX_BACKEND_RESTARTS) {
+    console.error(
+      `Daisy backend has failed ${MAX_BACKEND_RESTARTS} times; not restarting again. ` +
+      "Check the output above for the Python error."
+    );
+    return;
+  }
+  // Back off so a backend that crashes instantly can't spin the CPU.
+  const delay = Math.min(1000 * 2 ** backendRestarts, 15000);
+  backendRestarts += 1;
+  console.log(`Restarting Daisy backend in ${delay}ms (attempt ${backendRestarts}/${MAX_BACKEND_RESTARTS})…`);
+  backendRestartTimer = setTimeout(async () => {
+    backendRestartTimer = null;
+    if (shuttingDown) return;
+    // Something else may have taken the port in the meantime.
+    if (await isPortInUse(API_PORT)) {
+      console.log("Backend port is serving again; no restart needed.");
+      return;
+    }
+    startBackend();
+  }, delay);
+  backendRestartTimer.unref?.();
 }
 
 function statusPageUrl(title, message, showSpinner) {
@@ -135,12 +203,193 @@ ${showSpinner ? '<div class="spinner"></div>' : ""}
   return `data:text/html;charset=utf-8,${encodeURIComponent(html)}`;
 }
 
-function stopBackend() {
-  if (backendProcess) {
-    backendProcess.kill();
-    backendProcess = null;
+/**
+ * Terminate the backend child.
+ *
+ * uvicorn does not always honour SIGTERM promptly while it is serving a
+ * request, so the signal is escalated to SIGKILL rather than trusting it to
+ * exit. Leaving it alive orphans a process holding the API port, which the next
+ * `npm run electron:dev` then cannot bind.
+ *
+ * `immediate` skips the grace period for last-resort exit handlers, which have
+ * no opportunity to wait for an async callback.
+ */
+function stopBackend({ immediate = false } = {}) {
+  const child = backendProcess;
+  backendProcess = null;
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+
+  try {
+    if (immediate) {
+      child.kill("SIGKILL");
+      return;
+    }
+    child.kill("SIGTERM");
+    const escalate = setTimeout(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }, 1200);
+    // Never let this timer hold the event loop open on its own.
+    escalate.unref?.();
+    child.once("exit", () => clearTimeout(escalate));
+  } catch {
+    /* the child was already gone */
   }
 }
+
+// --- Native speech helper (macOS) ------------------------------------------
+//
+// Electron cannot use the browser's SpeechRecognition API: Chromium routes it
+// to a Google endpoint keyed to official Chrome builds, so it always fails with
+// a `network` error. On macOS we instead drive Apple's on-device recognizer —
+// the engine behind system dictation — through a small Swift helper that
+// streams JSON lines. Everything stays on the machine. Elsewhere (and if this
+// fails for any reason) the renderer falls back to the Whisper backend.
+
+let speechProcess = null;
+let speechStdoutBuffer = "";
+
+/** Path to the compiled Swift helper, or "" when it was never built. */
+function speechHelperPath() {
+  const appPath = app.getAppPath();
+  const candidates = [
+    path.join(appPath, "build", "DaisySpeech"),
+    // Packaged builds keep the helper outside the asar (asarUnpack): a binary
+    // inside an archive has no real filesystem path and cannot be executed.
+    path.join(`${appPath}.unpacked`, "build", "DaisySpeech"),
+  ];
+  return candidates.find((p) => fs.existsSync(p)) ?? "";
+}
+
+function sendToRenderer(channel, payload) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, payload);
+  }
+}
+
+function startSpeech() {
+  if (process.platform !== "darwin") return { ok: false, reason: "unsupported-platform" };
+  if (speechProcess) return { ok: true };
+
+  const bin = speechHelperPath();
+  if (!bin) return { ok: false, reason: "helper-missing" };
+
+  let child;
+  try {
+    child = spawn(bin, [], { stdio: ["pipe", "pipe", "pipe"] });
+  } catch (err) {
+    return { ok: false, reason: `spawn-failed: ${err.message}` };
+  }
+
+  speechProcess = child;
+  speechStdoutBuffer = "";
+
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    speechStdoutBuffer += chunk;
+    // The helper writes one JSON object per line; a chunk may split a line.
+    const lines = speechStdoutBuffer.split("\n");
+    speechStdoutBuffer = lines.pop() ?? "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      try {
+        sendToRenderer("speech:event", JSON.parse(trimmed));
+      } catch {
+        // Ignore anything that is not well-formed JSON.
+      }
+    }
+  });
+
+  child.stderr.on("data", (d) => console.error(`[speech] ${d}`.trimEnd()));
+
+  child.on("exit", (code, signal) => {
+    if (speechProcess === child) speechProcess = null;
+    // A TCC denial aborts the helper outright, so an unexpected exit is the
+    // renderer's cue to fall back rather than sit in silence.
+    sendToRenderer("speech:event", {
+      type: "exit",
+      code,
+      signal,
+    });
+  });
+
+  return { ok: true };
+}
+
+function stopSpeech() {
+  const child = speechProcess;
+  speechProcess = null;
+  if (!child || child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    child.stdin.write('{"cmd":"quit"}\n');
+  } catch {
+    // stdin already gone; fall through to the signal below.
+  }
+  const escalate = setTimeout(() => {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      /* already gone */
+    }
+  }, 500);
+  escalate.unref?.();
+  child.once("exit", () => clearTimeout(escalate));
+}
+
+function speechCommand(cmd) {
+  if (!speechProcess) return false;
+  try {
+    speechProcess.stdin.write(`${JSON.stringify({ cmd })}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+ipcMain.handle("speech:start", () => startSpeech());
+ipcMain.handle("speech:stop", () => {
+  stopSpeech();
+  return { ok: true };
+});
+ipcMain.handle("speech:available", () => ({
+  supported: process.platform === "darwin" && !!speechHelperPath(),
+}));
+// Muted while Daisy talks so she never transcribes her own voice.
+ipcMain.on("speech:pause", () => speechCommand("pause"));
+ipcMain.on("speech:resume", () => speechCommand("resume"));
+
+let shuttingDown = false;
+
+/**
+ * Ctrl+C in the dev terminal signals the whole process group. Electron exits
+ * without running its own `before-quit` lifecycle, so without this the backend
+ * is orphaned on every interrupt.
+ */
+function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  stopSpeech();
+  stopBackend();
+  const bail = setTimeout(() => app.exit(0), 1500);
+  bail.unref?.();
+}
+
+for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
+  process.on(signal, shutdown);
+}
+// Last resort: synchronous, so only an immediate kill is possible here.
+process.on("exit", () => {
+  stopBackend({ immediate: true });
+  try {
+    speechProcess?.kill("SIGKILL");
+  } catch {
+    /* already gone */
+  }
+});
 
 async function createWindow() {
   // On macOS, use the OS's own traffic-light window controls (like every
@@ -156,6 +405,9 @@ async function createWindow() {
 
   mainWindow = new BrowserWindow({
     title: "Daisy",
+    // Packaged builds take their icon from the bundle (electron-builder), but
+    // Windows/Linux dev runs need it set explicitly or they show Electron's.
+    ...(process.platform === "darwin" ? {} : { icon: appIconPath() }),
     width: 1400,
     height: 900,
     minWidth: 1024,
@@ -191,10 +443,20 @@ async function createWindow() {
   // page while the backend (which bundles local whisper/piper models) boots.
   mainWindow.loadURL(statusPageUrl("Waking up Daisy…", "Starting the local voice engine. This can take a little longer the first time.", true));
 
-  // Always launch the backend on startup, then wait until it's healthy.
-  startBackend();
+  // Launch the backend on startup, then wait until it's healthy. If something
+  // is already serving the port — typically a backend orphaned by a previous
+  // run — adopt it instead of spawning a second one that would only die with
+  // "address already in use" and leave the app with no API at all.
+  if (await isPortInUse(API_PORT)) {
+    console.log(`Daisy backend already listening on ${API_PORT}; reusing it.`);
+  } else {
+    startBackend();
+  }
   try {
     await waitForServer(`http://127.0.0.1:${API_PORT}/healthz`);
+    // Healthy again — forget earlier failures so the restart budget applies to
+    // a fresh burst of crashes, not to the whole session.
+    backendRestarts = 0;
   } catch (err) {
     console.error(err);
     if (mainWindow) {
@@ -255,7 +517,18 @@ ipcMain.handle("shell:open-external", async (_event, url) => {
   }
 });
 
+// Names the app in the macOS menu bar and in app.getName(). Must be set before
+// the app is ready, or macOS keeps showing "Electron" during development.
+app.setName("Daisy");
+
 app.whenReady().then(() => {
+  // In development the dock icon comes from the running Electron binary rather
+  // than a bundle Info.plist, so set it explicitly to avoid the default logo.
+  if (process.platform === "darwin" && !app.isPackaged) {
+    const icon = appIconPath();
+    if (icon) app.dock?.setIcon(icon);
+  }
+
   // Allow microphone access for Daisy's always-listening voice mode.
   const ses = session.defaultSession;
   ses.setPermissionRequestHandler((_wc, permission, callback) => {
@@ -268,9 +541,11 @@ app.whenReady().then(() => {
 });
 
 app.on("window-all-closed", () => {
-  stopBackend();
+  // On macOS the app stays alive after its last window closes and can be
+  // reopened from the dock, so the backend has to stay up too — stopping it
+  // here left `activate` showing a window with no API behind it.
   if (process.platform !== "darwin") {
-    app.quit();
+    app.quit(); // triggers before-quit, which stops the backend
   }
 });
 
@@ -282,4 +557,9 @@ app.on("activate", () => {
 
 app.on("before-quit", () => {
   stopBackend();
+});
+
+// Covers quit paths that bypass before-quit (e.g. a forced app.exit).
+app.on("will-quit", () => {
+  stopBackend({ immediate: true });
 });

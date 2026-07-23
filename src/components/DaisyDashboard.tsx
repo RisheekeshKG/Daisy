@@ -7,14 +7,11 @@ import {
   Check,
   Mail,
   Calendar,
-  Heart,
   Volume2,
   VolumeX,
   Play,
   Pause,
   Plus,
-  Activity,
-  Flame,
   CheckSquare,
   ListTodo,
   AlertCircle
@@ -24,7 +21,7 @@ import { spotify, type NowPlaying } from "../lib/spotify";
 import WaveformHero from "./WaveformHero";
 
 interface DaisyDashboardProps {
-  onNavigate: (tab: "jarvis" | "music" | "notes" | "calendar" | "gmail" | "apple") => void;
+  onNavigate: (tab: "daisy" | "music" | "notes" | "calendar" | "gmail") => void;
   onSubmitPrompt: (text: string) => void;
   notesCount: number;
   eventsCount: number;
@@ -57,19 +54,12 @@ export default function DaisyDashboard({
   const [localNotes, setLocalNotes] = useState<LocalNote[]>([]);
   const [newTaskTitle, setNewTaskTitle] = useState<string>("");
 
-  // Apple health real-time synced data
-  const [healthData, setHealthData] = useState({
-    steps: 8420,
-    calories: 485,
-    heartRate: 68,
-    lastSynced: new Date().toISOString()
-  });
 
   // Load notes & initialize listeners on mount
   useEffect(() => {
     // Sync local notes checklist
     const loadNotes = () => {
-      const saved = localStorage.getItem("jarvis_plain_notes");
+      const saved = localStorage.getItem("daisy_plain_notes");
       if (saved) {
         try {
           setLocalNotes(JSON.parse(saved));
@@ -89,35 +79,10 @@ export default function DaisyDashboard({
     syncNowPlaying();
     const nowPlayingTimer = window.setInterval(syncNowPlaying, 10000);
 
-    // Sync apple health
-    const fetchHealth = async () => {
-      try {
-        const res = await fetch("/api/apple-health");
-        if (res.ok) {
-          const json = await res.json();
-          setHealthData({
-            steps: json.steps ?? 8420,
-            calories: json.calories ?? 485,
-            heartRate: json.heartRate ?? 68,
-            lastSynced: json.lastSynced ?? new Date().toISOString()
-          });
-        }
-      } catch (err) {}
-    };
-    fetchHealth();
-
     // Check mute state of Daisy Voice Core
     setVoiceIsMuted(!daisyVoice.getEnabled());
 
-    // Sync interval
-    const interval = setInterval(() => {
-      fetchHealth();
-    }, 4000);
-
-    return () => {
-      clearInterval(interval);
-      clearInterval(nowPlayingTimer);
-    };
+    return () => clearInterval(nowPlayingTimer);
   }, []);
 
   // Quick speak trigger for voice-first listener
@@ -125,7 +90,7 @@ export default function DaisyDashboard({
     const lines = [
       "Voice is online and ready. Tell me what to sync.",
       "I'm listening in the background — go ahead and focus, I've got this.",
-      "Everything's synced with your Apple Watch and iCloud files.",
+      "Your notes and calendar are up to date.",
       "Systems are running fine. I'm listening whenever you need me.",
     ];
     const chosen = lines[Math.floor(Math.random() * lines.length)];
@@ -171,7 +136,7 @@ export default function DaisyDashboard({
       return n;
     });
     setLocalNotes(updated);
-    localStorage.setItem("jarvis_plain_notes", JSON.stringify(updated));
+    localStorage.setItem("daisy_plain_notes", JSON.stringify(updated));
   };
 
   // Fast task append
@@ -188,7 +153,7 @@ export default function DaisyDashboard({
     const updated = [newNote, ...localNotes];
     setLocalNotes(updated);
     setNewTaskTitle("");
-    localStorage.setItem("jarvis_plain_notes", JSON.stringify(updated));
+    localStorage.setItem("daisy_plain_notes", JSON.stringify(updated));
   };
 
   return (
@@ -203,7 +168,7 @@ export default function DaisyDashboard({
       </div>
 
       {/* Hero: live animated waveform (replaces the feature cards) */}
-      <WaveformHero playing={musicIsPlaying} transcript={voiceTranscript} processing={voiceProcessing} onTalk={() => onNavigate("jarvis")} />
+      <WaveformHero playing={musicIsPlaying} transcript={voiceTranscript} processing={voiceProcessing} onTalk={() => onNavigate("daisy")} />
 
       {/* Slim quick-access to each workspace */}
       <div className="flex flex-wrap gap-2 mb-10 relative z-20">
@@ -212,7 +177,6 @@ export default function DaisyDashboard({
           { label: "Mail", tab: "gmail" as const, color: "text-rose-500" },
           { label: "Music", tab: "music" as const, color: "text-emerald-600" },
           { label: "Calendar", tab: "calendar" as const, color: "text-blue-500" },
-          { label: "Apple", tab: "apple" as const, color: "text-pink-500" },
         ].map((item) => (
           <button
             key={item.label}
@@ -228,7 +192,7 @@ export default function DaisyDashboard({
       <div className="mt-10 space-y-6 relative z-20">
 
         {/* Real-time connected workspace widgets */}
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
 
             {/* Widget 1: Interactive Task Checklist */}
             <div className="bg-white/10 backdrop-blur-xl border border-white/30 rounded-[28px] p-4 flex flex-col justify-between shadow-sm min-h-[140px]">
@@ -236,7 +200,7 @@ export default function DaisyDashboard({
                 <div className="flex items-center justify-between mb-2">
                   <span className="text-[9px] font-black text-amber-700 uppercase tracking-wider flex items-center gap-1">
                     <ListTodo className="w-3 h-3" />
-                    Quick Checklist
+                    Today Checklist
                   </span>
                   <span className="text-[9px] text-zinc-400 font-bold">
                     {localNotes.filter(n => n.title.startsWith("✓ ")).length}/{localNotes.length} Done
@@ -381,7 +345,7 @@ export default function DaisyDashboard({
                     <span className="text-[8px] text-zinc-400 font-mono">10:55 AM</span>
                   </div>
                   <p className="text-[9px] text-zinc-500 font-semibold truncate mt-0.5">
-                    "Rishi, let's configure the Apple Shortcut sync URL to avoid TLS..."
+                    "Rishi, here's the workspace security draft for review before..."
                   </p>
                 </div>
               </div>
@@ -393,42 +357,6 @@ export default function DaisyDashboard({
                   className="text-rose-600 hover:underline flex items-center gap-0.5 cursor-pointer font-bold"
                 >
                   Sync Inbox <ArrowRight className="w-2.5 h-2.5" />
-                </button>
-              </div>
-            </div>
-
-            {/* Widget 4: Apple Health Sync Vitality */}
-            <div className="bg-white/10 backdrop-blur-xl border border-white/30 rounded-[28px] p-4 flex flex-col justify-between shadow-sm min-h-[140px]">
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[9px] font-black text-rose-700 uppercase tracking-wider flex items-center gap-1">
-                    <Activity className="w-3 h-3" />
-                    Apple Healthkit Sync
-                  </span>
-                  <span className="text-[9px] font-mono text-emerald-600 bg-emerald-50 px-1.5 py-0.5 rounded-full border border-emerald-100 font-black">
-                    Live Watch
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2 text-center">
-                  <div className="p-1.5 bg-white/40 rounded-xl border border-white/50">
-                    <span className="text-[9px] font-bold text-zinc-400 uppercase block leading-none">Steps</span>
-                    <span className="text-sm font-black text-zinc-950 block mt-0.5">{healthData.steps}</span>
-                  </div>
-                  <div className="p-1.5 bg-white/40 rounded-xl border border-white/50">
-                    <span className="text-[9px] font-bold text-zinc-400 uppercase block leading-none">Heart</span>
-                    <span className="text-sm font-black text-zinc-950 block mt-0.5">{healthData.heartRate} <span className="text-[8px] text-rose-500 font-medium">BPM</span></span>
-                  </div>
-                </div>
-              </div>
-
-              <div className="flex items-center justify-between mt-2 pt-2 border-t border-zinc-200/40 text-[8px] text-zinc-400 font-bold">
-                <span>Last Sync: {new Date(healthData.lastSynced).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                <button
-                  onClick={() => onNavigate("apple")}
-                  className="text-zinc-600 hover:underline cursor-pointer"
-                >
-                  Configure Shorties
                 </button>
               </div>
             </div>

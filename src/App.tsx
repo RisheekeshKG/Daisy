@@ -1,16 +1,16 @@
 import React, { useState, useEffect, useRef } from "react";
-import { Bot, Music, FileText, Calendar as CalendarIcon, Radio, Laptop, Plus, Search, Compass, LayoutGrid as Grid, Clock, Mail, Heart, Mic, MicOff } from "lucide-react";
+import { Bot, Music, FileText, Calendar as CalendarIcon, Radio, Laptop, Plus, Search, Compass, LayoutGrid as Grid, Clock, Mail, Mic, MicOff } from "lucide-react";
 import { Note, CalendarEvent, ChatMessage } from "./types";
 import { daisyVoice } from "./lib/voice";
 import { daisyListener, type ListenState } from "./lib/listen";
 import { spotify, SpotifyRequestError } from "./lib/spotify";
-import JarvisAgent, { DaisyFlower, YellowTie, DaisyMascotAvatar } from "./components/JarvisAgent";
+import { gcal } from "./lib/gcal";
+import DaisyAgent, { DaisyFlower, YellowTie, DaisyMascotAvatar } from "./components/DaisyAgent";
 import MediaSpotify from "./components/MediaSpotify";
 import WorkspaceNotion from "./components/WorkspaceNotion";
 import CalendarSchedule from "./components/CalendarSchedule";
 import DaisyDashboard from "./components/DaisyDashboard";
 import WorkspaceGmail from "./components/WorkspaceGmail";
-import AppleSyncHub from "./components/AppleSyncHub";
 import { motion, AnimatePresence } from "motion/react";
 import { daisyBridge } from "./lib/daisyBridge";
 
@@ -26,8 +26,8 @@ const INITIAL_PLAIN_NOTES: Note[] = [
   {
     id: "note_2",
     title: "Active Workspace Sentinel Protocol",
-    content: "# Workspace Security Directive\n\nJARVIS is monitoring all offline boundaries.\nAll notes inside this Notion workspace are designed to be client-side compiled.\n\n### Task Sync:\nEnsure daily study limits are scheduled to avoid bio-resonance fatigue.",
-    tags: ["security", "jarvis"],
+    content: "# Workspace Security Directive\n\nDaisy is monitoring all offline boundaries.\nAll notes inside this Notion workspace are designed to be client-side compiled.\n\n### Task Sync:\nEnsure daily study limits are scheduled to avoid bio-resonance fatigue.",
+    tags: ["security", "daisy"],
     updatedAt: new Date(2026, 6, 21, 8, 30).toISOString(),
   }
 ];
@@ -54,7 +54,7 @@ const INITIAL_PLAIN_EVENTS: CalendarEvent[] = [
   },
   {
     id: "event_3",
-    title: "JARVIS Neural Framework Audit",
+    title: "Daisy Neural Framework Audit",
     start: "2026-07-21T16:30",
     end: "2026-07-21T17:30",
     description: "Synchronize Gemini vector updates",
@@ -63,8 +63,44 @@ const INITIAL_PLAIN_EVENTS: CalendarEvent[] = [
   }
 ];
 
+/**
+ * Carry data across the jarvis_* -> daisy_* storage rename.
+ *
+ * Without this, renaming the keys would silently orphan every note, event and
+ * chat message already saved on this machine — the app would look like a fresh
+ * install. Runs once: after copying, the new keys exist and it no-ops. The old
+ * keys are left in place so downgrading doesn't lose anything either.
+ */
+function migrateLegacyStorage() {
+  const renames: Array<[string, string]> = [
+    ["jarvis_plain_notes", "daisy_plain_notes"],
+    ["jarvis_plain_events", "daisy_plain_events"],
+    ["jarvis_chat_history", "daisy_chat_history"],
+    ["jarvis_agent_view", "daisy_agent_view"],
+  ];
+  try {
+    for (const [oldKey, newKey] of renames) {
+      const legacy = localStorage.getItem(oldKey);
+      if (legacy !== null && localStorage.getItem(newKey) === null) {
+        localStorage.setItem(newKey, legacy);
+      }
+    }
+    // Stored chat messages tag the assistant's turns by role; the renamed role
+    // has to be rewritten or old replies stop rendering as Daisy's.
+    const history = localStorage.getItem("daisy_chat_history");
+    if (history && history.includes('"jarvis"')) {
+      const fixed = JSON.parse(history).map((m: any) =>
+        m?.role === "jarvis" ? { ...m, role: "daisy" } : m
+      );
+      localStorage.setItem("daisy_chat_history", JSON.stringify(fixed));
+    }
+  } catch {
+    /* storage unavailable or corrupt — fall through to defaults */
+  }
+}
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState<"home" | "jarvis" | "music" | "notes" | "calendar" | "gmail">("home");
+  const [activeTab, setActiveTab] = useState<"home" | "daisy" | "music" | "notes" | "calendar" | "gmail">("home");
   const [initialPrompt, setInitialPrompt] = useState<string>("");
 
   const [notes, setNotes] = useState<Note[]>([]);
@@ -74,6 +110,12 @@ export default function App() {
   // Music state — mirrors real Spotify playback (there is no local player).
   const [playing, setPlaying] = useState<boolean>(false);
   const [activeTrackTitle, setActiveTrackTitle] = useState<string>("None");
+
+  // Google Calendar sync state
+  const [gcalConnected, setGcalConnected] = useState<boolean>(false);
+  const [gcalSyncing, setGcalSyncing] = useState<boolean>(false);
+  const [gcalError, setGcalError] = useState<string>("");
+  const [gcalLastSync, setGcalLastSync] = useState<string>("");
 
   // Time stamp state
   const [time, setTime] = useState<string>("");
@@ -112,21 +154,22 @@ export default function App() {
 
   // Hydrate notes & events with local storage
   useEffect(() => {
-    const savedNotes = localStorage.getItem("jarvis_plain_notes");
-    const savedEvents = localStorage.getItem("jarvis_plain_events");
+    migrateLegacyStorage();
+    const savedNotes = localStorage.getItem("daisy_plain_notes");
+    const savedEvents = localStorage.getItem("daisy_plain_events");
     
     if (savedNotes) {
       try { setNotes(JSON.parse(savedNotes)); } catch(e) {}
     } else {
       setNotes(INITIAL_PLAIN_NOTES);
-      localStorage.setItem("jarvis_plain_notes", JSON.stringify(INITIAL_PLAIN_NOTES));
+      localStorage.setItem("daisy_plain_notes", JSON.stringify(INITIAL_PLAIN_NOTES));
     }
     
     if (savedEvents) {
       try { setEvents(JSON.parse(savedEvents)); } catch(e) {}
     } else {
       setEvents(INITIAL_PLAIN_EVENTS);
-      localStorage.setItem("jarvis_plain_events", JSON.stringify(INITIAL_PLAIN_EVENTS));
+      localStorage.setItem("daisy_plain_events", JSON.stringify(INITIAL_PLAIN_EVENTS));
     }
   }, []);
 
@@ -143,20 +186,26 @@ export default function App() {
     const updated = [newNote, ...notes];
     setNotes(updated);
     setSelectedNoteId(newNote.id);
-    localStorage.setItem("jarvis_plain_notes", JSON.stringify(updated));
+    localStorage.setItem("daisy_plain_notes", JSON.stringify(updated));
   };
 
   const handleDeleteNote = async (id: string) => {
     const updated = notes.filter(n => n.id !== id);
     setNotes(updated);
     if (selectedNoteId === id) setSelectedNoteId(null);
-    localStorage.setItem("jarvis_plain_notes", JSON.stringify(updated));
+    localStorage.setItem("daisy_plain_notes", JSON.stringify(updated));
   };
 
   const handleUpdateNote = async (updatedNote: Note) => {
     const updated = notes.map(n => n.id === updatedNote.id ? updatedNote : n);
     setNotes(updated);
-    localStorage.setItem("jarvis_plain_notes", JSON.stringify(updated));
+    localStorage.setItem("daisy_plain_notes", JSON.stringify(updated));
+  };
+
+  /** Persist the events list; single place that writes the storage key. */
+  const commitEvents = (updated: CalendarEvent[]) => {
+    setEvents(updated);
+    localStorage.setItem("daisy_plain_events", JSON.stringify(updated));
   };
 
   // Calendar Event handlers
@@ -165,52 +214,190 @@ export default function App() {
       ...newEventData,
       id: crypto.randomUUID()
     };
-    const updated = [...events, newEvent];
-    setEvents(updated);
-    localStorage.setItem("jarvis_plain_events", JSON.stringify(updated));
+    // Push to Google first when connected, so the local copy is saved already
+    // carrying its googleId and the next sync recognises it as the same event.
+    if (gcalConnected) {
+      try {
+        const remote = await gcal.createEvent({
+          title: newEvent.title,
+          start: newEvent.start,
+          end: newEvent.end,
+          description: newEvent.description,
+        });
+        newEvent.googleId = remote.googleId;
+      } catch (err) {
+        setGcalError(err instanceof Error ? err.message : "Could not add that to Google Calendar.");
+      }
+    }
+    commitEvents([...events, newEvent]);
   };
 
   const handleDeleteEvent = async (id: string) => {
-    const updated = events.filter(e => e.id !== id);
-    setEvents(updated);
-    localStorage.setItem("jarvis_plain_events", JSON.stringify(updated));
+    const target = events.find(e => e.id === id);
+    if (gcalConnected && target?.googleId) {
+      try {
+        await gcal.deleteEvent(target.googleId);
+      } catch (err) {
+        setGcalError(err instanceof Error ? err.message : "Could not remove that from Google Calendar.");
+      }
+    }
+    commitEvents(events.filter(e => e.id !== id));
+  };
+
+  /**
+   * Pull Google Calendar into the local list.
+   *
+   * Google is authoritative for anything carrying a googleId: those entries are
+   * replaced wholesale (and dropped if they disappeared upstream), while local
+   * fields the API doesn't know about — category, priority, subtasks, completed
+   * — are preserved from the existing copy. Local-only events are left alone.
+   */
+  const syncGoogleCalendar = async () => {
+    setGcalSyncing(true);
+    setGcalError("");
+    try {
+      const remote = await gcal.events();
+      setEvents((prev) => {
+        const byGoogleId = new Map<string, CalendarEvent>(
+          prev.filter(e => e.googleId).map(e => [e.googleId as string, e])
+        );
+        const merged: CalendarEvent[] = [
+          ...prev.filter(e => !e.googleId),
+          ...remote.map((r) => {
+            const existing = byGoogleId.get(r.googleId);
+            return {
+              ...existing,
+              id: existing?.id ?? crypto.randomUUID(),
+              googleId: r.googleId,
+              title: r.title,
+              start: r.start,
+              end: r.end,
+              description: r.description || existing?.description,
+              category: existing?.category ?? ("work" as const),
+            };
+          }),
+        ];
+        localStorage.setItem("daisy_plain_events", JSON.stringify(merged));
+        return merged;
+      });
+      setGcalLastSync(new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }));
+    } catch (err) {
+      setGcalError(err instanceof Error ? err.message : "Could not sync Google Calendar.");
+    } finally {
+      setGcalSyncing(false);
+    }
+  };
+
+  // Check the Google connection on start, and pull once if it is live.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const s = await gcal.status();
+        if (cancelled) return;
+        setGcalConnected(s.connected);
+        // Signed in but Google still refuses (e.g. the Calendar API is not
+        // enabled on the project). Show why — re-authorizing would not help.
+        if (!s.connected && s.authorized && s.error) setGcalError(s.error);
+        if (s.connected) syncGoogleCalendar();
+      } catch {
+        /* backend not up yet — the Calendar tab can retry */
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleConnectGoogleCalendar = async () => {
+    setGcalError("");
+    try {
+      await gcal.connect();
+      // The consent flow finishes in an external browser, so poll for the
+      // backend flipping to connected rather than assuming it worked.
+      const started = Date.now();
+      const poll = window.setInterval(async () => {
+        try {
+          const s = await gcal.status();
+          if (s.connected) {
+            window.clearInterval(poll);
+            setGcalConnected(true);
+            syncGoogleCalendar();
+          } else if (s.authorized && s.error) {
+            // Sign-in worked but Google still rejects us. Waiting cannot fix
+            // that, so stop and say what actually needs changing.
+            window.clearInterval(poll);
+            setGcalError(s.error);
+          } else if (Date.now() - started > 180000) {
+            window.clearInterval(poll);
+            setGcalError("Google sign-in didn't complete. Try connecting again.");
+          }
+        } catch {
+          /* keep polling */
+        }
+      }, 2000);
+    } catch (err) {
+      setGcalError(err instanceof Error ? err.message : "Could not start Google sign-in.");
+    }
+  };
+
+  const handleDisconnectGoogleCalendar = async () => {
+    try {
+      await gcal.disconnect();
+    } catch {
+      /* disconnect locally regardless */
+    }
+    setGcalConnected(false);
+    setGcalLastSync("");
+    // Drop the mirrored copies; local-only events stay.
+    commitEvents(events.filter(e => !e.googleId));
   };
 
   const handleToggleComplete = async (id: string) => {
     const updated = events.map(e => e.id === id ? { ...e, completed: !e.completed } : e);
     setEvents(updated);
-    localStorage.setItem("jarvis_plain_events", JSON.stringify(updated));
+    localStorage.setItem("daisy_plain_events", JSON.stringify(updated));
   };
 
   const handleUpdateEvent = async (updatedEvent: CalendarEvent) => {
-    const updated = events.map(e => e.id === updatedEvent.id ? updatedEvent : e);
-    setEvents(updated);
-    localStorage.setItem("jarvis_plain_events", JSON.stringify(updated));
+    // Mirror title/time edits upstream; local-only fields (subtasks, priority)
+    // have no Google equivalent and stay on this machine.
+    if (gcalConnected && updatedEvent.googleId) {
+      try {
+        await gcal.updateEvent(updatedEvent.googleId, {
+          title: updatedEvent.title,
+          start: updatedEvent.start,
+          end: updatedEvent.end,
+          description: updatedEvent.description,
+        });
+      } catch (err) {
+        setGcalError(err instanceof Error ? err.message : "Could not update that in Google Calendar.");
+      }
+    }
+    commitEvents(events.map(e => e.id === updatedEvent.id ? updatedEvent : e));
   };
 
   const handlePlayingChange = (isPlaying: boolean) => {
     setPlaying(isPlaying);
   };
 
-  // Execute Neural Automation Commands returned by JARVIS
+  // Execute automation commands returned by Daisy
   const handleExecuteCommand = async (cmd: { type: string; payload: any }) => {
-    console.log("JARVIS automation command:", cmd);
+    console.log("Daisy automation command:", cmd);
     switch (cmd.type) {
       case "ADD_EVENT":
         await handleAddEvent({
-          title: cmd.payload.title || "Scheduled JARVIS Event",
+          title: cmd.payload.title || "Scheduled Daisy Event",
           start: cmd.payload.start || new Date().toISOString().substring(0, 16),
           end: cmd.payload.end || new Date(Date.now() + 3600000).toISOString().substring(0, 16),
-          description: cmd.payload.description || "Synthesized proactively by JARVIS Sentinel system",
+          description: cmd.payload.description || "Added proactively by Daisy",
           category: "ai",
           completed: false,
         });
         break;
       case "ADD_NOTE":
         await handleAddNote({
-          title: cmd.payload.title || "JARVIS Memo Draft",
+          title: cmd.payload.title || "Daisy Memo Draft",
           content: cmd.payload.content || "# Memo\nProactively derived by neural workspace.",
-          tags: cmd.payload.tags || ["jarvis"],
+          tags: cmd.payload.tags || ["daisy"],
         });
         break;
       case "PLAY_SPOTIFY":
@@ -237,6 +424,15 @@ export default function App() {
             case "shuffle_on": await spotify.setShuffle(true); break;
             case "shuffle_off": await spotify.setShuffle(false); break;
             case "volume": await spotify.setVolume(Number(cmd.payload.percent ?? 50)); break;
+            case "repeat_off": await spotify.setRepeat("off"); break;
+            case "repeat_all": await spotify.setRepeat("context"); break;
+            case "repeat_one": await spotify.setRepeat("track"); break;
+            case "restart": await spotify.seek(0); break;
+            case "seek_forward": await spotify.seekBy(Number(cmd.payload.seconds ?? 30) * 1000); break;
+            case "seek_back": await spotify.seekBy(-Number(cmd.payload.seconds ?? 30) * 1000); break;
+            case "queue": await spotify.queue(String(cmd.payload.query ?? "")); break;
+            case "like": await spotify.saveCurrent(true); break;
+            case "unlike": await spotify.saveCurrent(false); break;
             default: console.warn("Unknown Spotify action:", cmd.payload.action);
           }
         } catch (err) {
@@ -270,7 +466,7 @@ export default function App() {
   // Submission handler from bottom Daisy bar
   const handleDashboardPromptSubmit = (text: string) => {
     setInitialPrompt(text);
-    setActiveTab("jarvis");
+    setActiveTab("daisy");
   };
 
   // Keep the footer and Daisy's context in sync with what Spotify is actually
@@ -331,7 +527,7 @@ export default function App() {
 
     let history: ChatMessage[] = [];
     try {
-      history = JSON.parse(localStorage.getItem("jarvis_chat_history") || "[]");
+      history = JSON.parse(localStorage.getItem("daisy_chat_history") || "[]");
     } catch {}
 
     const userMsg: ChatMessage = {
@@ -341,7 +537,7 @@ export default function App() {
       timestamp: new Date().toISOString(),
     };
     history = [...history, userMsg];
-    localStorage.setItem("jarvis_chat_history", JSON.stringify(history));
+    localStorage.setItem("daisy_chat_history", JSON.stringify(history));
     window.dispatchEvent(new Event("daisy-chat-updated"));
 
     try {
@@ -351,7 +547,7 @@ export default function App() {
         eventsCount: events.length,
         currentTrack: activeTrackTitle,
       };
-      const res = await fetch("/api/jarvis", {
+      const res = await fetch("/api/daisy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -363,15 +559,15 @@ export default function App() {
       const data = await res.json();
       const replyText = data.text || "Sorry, I didn't catch that.";
 
-      const jarvisMsg: ChatMessage = {
+      const daisyMsg: ChatMessage = {
         id: crypto.randomUUID(),
-        role: "jarvis",
+        role: "daisy",
         text: replyText,
         timestamp: new Date().toISOString(),
         commands: data.commands,
       };
-      history = [...history, jarvisMsg];
-      localStorage.setItem("jarvis_chat_history", JSON.stringify(history));
+      history = [...history, daisyMsg];
+      localStorage.setItem("daisy_chat_history", JSON.stringify(history));
       window.dispatchEvent(new Event("daisy-chat-updated"));
 
       // Handing off to TTS: daisyVoice.isBusy() becomes true synchronously
@@ -390,9 +586,83 @@ export default function App() {
     }
   };
 
+  // --- Wake word ------------------------------------------------------------
+  // Siri-style: the mic always captures, but Daisy stays asleep until she hears
+  // "Hey Daisy". Once awake she listens for a request and, if none arrives,
+  // goes back to sleep so ordinary conversation isn't sent to the LLM.
+  const WAKE_WINDOW_MS = 8000;
+  const wakeUntilRef = useRef(0);
+  const [voiceAwake, setVoiceAwake] = useState(false);
+
+  /**
+   * Match "Daisy" at the start of an utterance, with an optional greeting, so
+   * both "Daisy, play music" and "Hey Daisy, play music" wake her.
+   *
+   * Anchored to the start on purpose: matching her name anywhere would fire on
+   * "I told Daisy about it". Whisper's initial_prompt biases toward the correct
+   * spelling, but close variants still come back, so those are accepted too.
+   */
+  const WAKE_RE = /^\s*(?:\b(?:hey|hi|hello|ok(?:ay)?)\b[\s,]*)?\b(?:dais(?:y|ey|ie)|daizy|dazy|daysi)\b[\s,.!?-]*/i;
+
+  /**
+   * The command Daisy should act on, or null if she wasn't addressed.
+   * Returns "" when the wake word was all that was said.
+   */
+  const extractCommand = (transcript: string, awake: boolean): string | null => {
+    const match = transcript.match(WAKE_RE);
+    if (match) return transcript.slice(match[0].length).trim();
+    // Already awake: treat this as a follow-up in the same conversation.
+    return awake ? transcript.trim() : null;
+  };
+
+  const handleSpokenTranscript = (raw: string) => {
+    const text = (raw || "").trim().replace(/\s+/g, " ");
+    if (!text) return;
+
+    const awake = Date.now() < wakeUntilRef.current;
+    const command = extractCommand(text, awake);
+
+    if (command === null) {
+      // Overheard speech that wasn't for Daisy — drop it without adding to the
+      // chat history or waking her.
+      setVoiceDraftTranscript("");
+      return;
+    }
+
+    wakeUntilRef.current = Date.now() + WAKE_WINDOW_MS;
+    setVoiceAwake(true);
+
+    if (!command) {
+      // Just the wake phrase — acknowledge and hold the window open, the way
+      // Siri chimes and waits for what you actually wanted.
+      setVoiceFinalTranscript(text);
+      daisyVoice.speak("Yes?");
+      return;
+    }
+    handleVoiceMessage(command);
+  };
+
+  // Let the awake window lapse so she stops answering undirected chatter.
+  // The countdown is paused while she is mid-answer: the window is about how
+  // long she waits for *you*, not a deadline on her own reply.
+  useEffect(() => {
+    if (!voiceAwake) return;
+    const id = window.setInterval(() => {
+      if (voiceProcessingRef.current || daisyVoice.isBusy()) {
+        wakeUntilRef.current = Date.now() + WAKE_WINDOW_MS;
+        return;
+      }
+      if (Date.now() >= wakeUntilRef.current) {
+        setVoiceAwake(false);
+        setVoiceDraftTranscript("");
+      }
+    }, 500);
+    return () => window.clearInterval(id);
+  }, [voiceAwake]);
+
   // Keep the listener callback pointed at the latest handler (fresh state).
   useEffect(() => {
-    voiceHandlerRef.current = handleVoiceMessage;
+    voiceHandlerRef.current = handleSpokenTranscript;
   });
 
   // Shared listener wiring for both the manual toggle and the on-mount
@@ -497,27 +767,38 @@ export default function App() {
             >
               <span className="hover:text-amber-600 transition-colors cursor-pointer" onClick={() => setActiveTab("home")}>File</span>
               <span className="hover:text-amber-600 transition-colors cursor-pointer" onClick={() => setActiveTab("notes")}>Edit</span>
-              <span className="hover:text-amber-600 transition-colors cursor-pointer" onClick={() => setActiveTab("jarvis")}>Workspace</span>
+              <span className="hover:text-amber-600 transition-colors cursor-pointer" onClick={() => setActiveTab("daisy")}>Workspace</span>
               <span className="hover:text-amber-600 transition-colors cursor-pointer" onClick={() => setActiveTab("calendar")}>Window</span>
               <span className="hover:text-amber-600 transition-colors cursor-pointer" onClick={() => setActiveTab("music")}>Audio</span>
-              <span className="hover:text-amber-600 transition-colors cursor-pointer" onClick={() => setActiveTab("apple")}>Ecosystem</span>
-              <span className="hover:text-amber-600 transition-colors cursor-pointer" onClick={() => setActiveTab("jarvis")}>Help</span>
+              <span className="hover:text-amber-600 transition-colors cursor-pointer" onClick={() => setActiveTab("daisy")}>Help</span>
             </div>
           </div>
 
           <div className="flex items-center gap-3 text-xs font-semibold text-zinc-600">
-            {/* Global always-listening voice toggle */}
+            {/* Mic master switch. When on, Daisy waits for the wake word and
+                only answers once she's been addressed. */}
             <button
               onClick={toggleVoiceListening}
               style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-              title={voiceListening ? "Daisy is listening — click to stop" : "Enable always-listening voice"}
+              title={
+                !voiceListening
+                  ? "Microphone off — click to let Daisy listen"
+                  : voiceAwake
+                  ? "Daisy is listening for your request"
+                  : 'Say "Daisy" to wake her'
+              }
               className={`flex items-center gap-1.5 pl-1.5 pr-2.5 py-1 rounded-full border transition-all cursor-pointer ${
-                voiceListening
+                !voiceListening
+                  ? "bg-white/60 border-zinc-200 text-zinc-500 hover:bg-white"
+                  : voiceAwake
                   ? "bg-emerald-500 border-emerald-600 text-white shadow-sm"
-                  : "bg-white/60 border-zinc-200 text-zinc-500 hover:bg-white"
+                  : "bg-white/70 border-emerald-300 text-emerald-700"
               }`}
             >
               {voiceListening ? <Mic className="w-3.5 h-3.5" /> : <MicOff className="w-3.5 h-3.5" />}
+              <span className="text-[10px] font-bold tracking-tight">
+                {!voiceListening ? "Off" : voiceAwake ? "Listening…" : 'Say "Daisy"'}
+              </span>
             </button>
             <span>{time}</span>
             <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse" />
@@ -535,10 +816,10 @@ export default function App() {
               {/* Circle 1: Daisy Home Agent Bot */}
               <button
                 onClick={() => {
-                  setActiveTab("jarvis");
+                  setActiveTab("daisy");
                 }}
                 className={`w-11 h-11 rounded-full flex items-center justify-center transition-all cursor-pointer relative shrink-0 ${
-                  activeTab === "jarvis" ? "scale-105 ring-2 ring-amber-400/40 shadow-md" : "opacity-70 hover:opacity-100 hover:scale-105"
+                  activeTab === "daisy" ? "scale-105 ring-2 ring-amber-400/40 shadow-md" : "opacity-70 hover:opacity-100 hover:scale-105"
                 }`}
                 title="Daisy AI Assistant"
               >
@@ -610,19 +891,6 @@ export default function App() {
                 <Mail className="w-4 h-4" />
               </button>
 
-              {/* Circle 7: Apple Ecosystem */}
-              <button
-                onClick={() => {
-                  setActiveTab("apple");
-                }}
-                className={`w-10 h-10 md:w-11 md:h-11 rounded-full flex items-center justify-center border transition-all cursor-pointer ${
-                  activeTab === "apple" ? "bg-white shadow-md border-amber-300 ring-2 ring-amber-300/20 text-amber-600" : "bg-white/40 hover:bg-white/80 border-zinc-200 text-zinc-600"
-                }`}
-                title="Apple Ecosystem Sync"
-              >
-                <Heart className="w-4 h-4" />
-              </button>
-
             </div>
           </div>
 
@@ -647,8 +915,8 @@ export default function App() {
                     voiceProcessing={voiceProcessing}
                   />
                 )}
-                {activeTab === "jarvis" && (
-                  <JarvisAgent
+                {activeTab === "daisy" && (
+                  <DaisyAgent
                     onExecuteCommand={handleExecuteCommand}
                     notesCount={notes.length}
                     eventsCount={events.length}
@@ -676,13 +944,17 @@ export default function App() {
                     onDeleteEvent={handleDeleteEvent}
                     onToggleComplete={handleToggleComplete}
                     onUpdateEvent={handleUpdateEvent}
+                    googleConnected={gcalConnected}
+                    googleSyncing={gcalSyncing}
+                    googleError={gcalError}
+                    googleLastSync={gcalLastSync}
+                    onGoogleConnect={handleConnectGoogleCalendar}
+                    onGoogleDisconnect={handleDisconnectGoogleCalendar}
+                    onGoogleSync={syncGoogleCalendar}
                   />
                 )}
                 {activeTab === "gmail" && (
                   <WorkspaceGmail />
-                )}
-                {activeTab === "apple" && (
-                  <AppleSyncHub />
                 )}
               </motion.div>
             </AnimatePresence>

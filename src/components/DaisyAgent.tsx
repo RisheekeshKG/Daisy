@@ -279,7 +279,7 @@ const getSentimentExpression = (text: string, isThinking: boolean): string => {
   return "^-^";
 };
 
-interface JarvisAgentProps {
+interface DaisyAgentProps {
   onExecuteCommand: (command: { type: string; payload: any }) => void;
   notesCount: number;
   eventsCount: number;
@@ -288,16 +288,16 @@ interface JarvisAgentProps {
   onClearInitialPrompt?: () => void;
 }
 
-export default function JarvisAgent({
+export default function DaisyAgent({
   onExecuteCommand,
   notesCount,
   eventsCount,
   currentTrackTitle,
   initialPrompt,
   onClearInitialPrompt,
-}: JarvisAgentProps) {
+}: DaisyAgentProps) {
   const [messages, setMessages] = useState<ChatMessage[]>(() => {
-    const saved = localStorage.getItem("jarvis_chat_history");
+    const saved = localStorage.getItem("daisy_chat_history");
     if (saved) {
       try {
         return JSON.parse(saved);
@@ -308,7 +308,7 @@ export default function JarvisAgent({
     return [
       {
         id: "welcome",
-        role: "jarvis",
+        role: "daisy",
         text: "Hi, I'm Daisy. Everything's set up and ready. What do you need?",
         timestamp: new Date().toISOString(),
       },
@@ -330,7 +330,7 @@ export default function JarvisAgent({
   useEffect(() => {
     const reload = () => {
       try {
-        const saved = localStorage.getItem("jarvis_chat_history");
+        const saved = localStorage.getItem("daisy_chat_history");
         if (saved) setMessages(JSON.parse(saved));
       } catch {}
     };
@@ -370,7 +370,7 @@ export default function JarvisAgent({
   }, [expressionOverride]);
 
   useEffect(() => {
-    localStorage.setItem("jarvis_chat_history", JSON.stringify(messages));
+    localStorage.setItem("daisy_chat_history", JSON.stringify(messages));
     // Scroll only the chat container (not the page). scrollIntoView() walks up
     // every scrollable ancestor — including the overflow-hidden app frame —
     // which would shove the whole window up. Setting scrollTop stays local.
@@ -417,7 +417,7 @@ export default function JarvisAgent({
         currentTrack: currentTrackTitle || "None",
       };
 
-      const response = await fetch("/api/jarvis", {
+      const response = await fetch("/api/daisy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -428,23 +428,23 @@ export default function JarvisAgent({
       });
 
       if (!response.ok) {
-        throw new Error("Failed to communicate with Jarvis server.");
+        throw new Error("Failed to reach the Daisy server.");
       }
 
       const data = await response.json();
 
-      const jarvisMsg: ChatMessage = {
+      const daisyMsg: ChatMessage = {
         id: crypto.randomUUID(),
-        role: "jarvis",
+        role: "daisy",
         text: data.text || "Apologies Sir, my cybernetic pathways encountered a momentary desync.",
         timestamp: new Date().toISOString(),
         commands: data.commands,
       };
 
-      setMessages((prev) => [...prev, jarvisMsg]);
-      daisyVoice.speak(jarvisMsg.text);
+      setMessages((prev) => [...prev, daisyMsg]);
+      daisyVoice.speak(daisyMsg.text);
 
-      // Execute commands returned by Jarvis
+      // Execute commands returned by Daisy
       if (data.commands && Array.isArray(data.commands)) {
         data.commands.forEach((cmd: any) => {
           onExecuteCommand(cmd);
@@ -454,7 +454,7 @@ export default function JarvisAgent({
       console.error(error);
       const errorMsg: ChatMessage = {
         id: crypto.randomUUID(),
-        role: "jarvis",
+        role: "daisy",
         text: "I am running in offline local containment, Sir. I can help organize notes, play ambient tracks, and manage schedule items locally directly.",
         timestamp: new Date().toISOString(),
       };
@@ -473,7 +473,7 @@ export default function JarvisAgent({
   ];
 
   return (
-    <div id="jarvis_agent_view" className="h-full max-md:h-auto flex flex-col p-4 md:p-6 text-zinc-800 overflow-hidden max-md:overflow-y-auto">
+    <div id="daisy_agent_view" className="h-full max-md:h-auto flex flex-col p-4 md:p-6 text-zinc-800 overflow-hidden max-md:overflow-y-auto">
       {/* Header Info Panel */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-zinc-200/60 pb-4 mb-4 gap-4 flex-shrink-0">
         <div className="flex items-center gap-3">
@@ -768,7 +768,7 @@ export default function JarvisAgent({
                           : "bg-zinc-50 border-zinc-200/60 text-zinc-800 rounded-tl-none shadow-sm relative"
                       }`}
                     >
-                      {msg.role === "jarvis" ? (
+                      {msg.role === "daisy" ? (
                         <div className="relative group">
                           <p className="whitespace-pre-wrap font-medium pr-6">{msg.text}</p>
                           <button

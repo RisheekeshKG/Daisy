@@ -1,21 +1,31 @@
-import React, { useState } from "react";
-import { 
-  Calendar as CalendarIcon, 
-  Clock, 
-  Plus, 
-  Trash, 
-  CheckSquare, 
-  Square, 
-  ChevronLeft, 
-  ChevronRight, 
-  Check, 
-  ChevronDown, 
-  ChevronUp, 
-  ListTodo, 
-  AlertTriangle 
+/**
+ * Daisy's calendar — a real Google Calendar client.
+ *
+ * Google data is fetched here rather than passed down, the same way SpotifyPanel
+ * owns its own playback state: the view needs multiple calendars, colours and
+ * per-event detail that never fit through App's single local event list. Local
+ * Daisy-only events still arrive via props and are merged in for display; any
+ * event that came from Google is filtered out of that list so a synced copy
+ * cannot render twice.
+ */
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Calendar as CalendarIcon, Clock, Plus, ChevronLeft, ChevronRight, Check,
+  RefreshCw, Link2 as LinkIcon, Search, MapPin, Users, Video, Repeat, Bell,
+  ExternalLink, Loader2, Sparkles, X, AlertCircle, Trash2,
 } from "lucide-react";
-import { CalendarEvent } from "../types";
 import { motion, AnimatePresence } from "motion/react";
+import { CalendarEvent } from "../types";
+import {
+  gcal, type GCalCalendar, type GCalColorMap, type GCalEvent, type GCalEventInput,
+} from "../lib/gcal";
+import EventEditor from "./EventEditor";
+import {
+  WEEKDAYS, monthMatrix, monthLabel, todayYmd, ymd, formatClock, formatLongDate,
+  describeRecurrence, daysCovered, fromGoogle, fromLocal, parseDay,
+  type UnifiedEvent,
+} from "./calendarUtils";
 
 interface CalendarScheduleProps {
   events: CalendarEvent[];
@@ -23,539 +33,688 @@ interface CalendarScheduleProps {
   onDeleteEvent: (id: string) => void;
   onToggleComplete: (id: string) => void;
   onUpdateEvent?: (event: CalendarEvent) => void;
+  googleConnected?: boolean;
+  googleSyncing?: boolean;
+  googleError?: string;
+  googleLastSync?: string;
+  onGoogleConnect?: () => void;
+  onGoogleDisconnect?: () => void;
+  onGoogleSync?: () => void;
 }
+
+/** Days of Google data to hold around the visible month. */
+const WINDOW_DAYS = 45;
 
 export default function CalendarSchedule({
   events,
-  onAddEvent,
   onDeleteEvent,
   onToggleComplete,
-  onUpdateEvent,
+  googleConnected = false,
+  googleSyncing = false,
+  googleError = "",
+  googleLastSync = "",
+  onGoogleConnect,
+  onGoogleDisconnect,
+  onGoogleSync,
 }: CalendarScheduleProps) {
-  const [currentDate, setCurrentDate] = useState(new Date(2026, 6, 21)); // Set mock default date consistent with local time metadata (July 2026)
-  const [newEventTitle, setNewEventTitle] = useState("");
-  const [newEventTime, setNewEventTime] = useState("12:00");
-  const [newEventCategory, setNewEventCategory] = useState<"work" | "personal" | "health" | "media" | "ai">("work");
-  const [newEventPriority, setNewEventPriority] = useState<"high" | "medium" | "low">("medium");
-  const [selectedDay, setSelectedDay] = useState(21); // July 21, 2026
+  const today = todayYmd();
+  const [cursor, setCursor] = useState(() => {
+    const now = new Date();
+    return { year: now.getFullYear(), month: now.getMonth() };
+  });
+  const [selectedDate, setSelectedDate] = useState(today);
 
-  // Subtask Interaction States
-  const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
-  const [newSubtaskText, setNewSubtaskText] = useState<{ [eventId: string]: string }>({});
+  const [calendars, setCalendars] = useState<GCalCalendar[]>([]);
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [colors, setColors] = useState<GCalColorMap>({});
+  const [googleEvents, setGoogleEvents] = useState<GCalEvent[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [search, setSearch] = useState("");
+  const [quickAdd, setQuickAdd] = useState("");
+  const [quickBusy, setQuickBusy] = useState(false);
+  const [editing, setEditing] = useState<UnifiedEvent | null>(null);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [busyKey, setBusyKey] = useState("");
+  // Guards against a slow response for an old month overwriting a newer one.
+  const requestRef = useRef(0);
 
-  // Helper arrays for calendar generation
-  const daysInMonth = 31; // July has 31 days
-  const startDayOfWeek = 3; // July 1, 2026 is a Wednesday (0=Sun, 1=Mon, 2=Tue, 3=Wed...)
+  const visibleCalendarIds = useMemo(
+    () => calendars.filter((c) => !hidden.has(c.id)).map((c) => c.id),
+    [calendars, hidden]
+  );
 
-  const handlePrevMonth = () => {
-    // Keep it on July 2026 for simulation sandbox consistency
+  const loadCalendars = useCallback(async () => {
+    try {
+      const [list, palette] = await Promise.all([gcal.calendars(), gcal.colors()]);
+      setCalendars(list);
+      setColors(palette);
+      // Respect the show/hide state the user already set in Google itself.
+      setHidden(new Set(list.filter((c) => !c.selected).map((c) => c.id)));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not load your calendars.");
+    }
+  }, []);
+
+  const loadEvents = useCallback(
+    async (ids: string[], query: string) => {
+      if (!ids.length) {
+        setGoogleEvents([]);
+        return;
+      }
+      const ticket = ++requestRef.current;
+      setLoading(true);
+      try {
+        // Anchor the window on the month being viewed, not on today, so paging
+        // back a few months still shows data.
+        const anchor = new Date(cursor.year, cursor.month, 15);
+        const offsetDays = Math.round((anchor.getTime() - Date.now()) / 86400000);
+        const list = await gcal.events(
+          Math.max(0, WINDOW_DAYS - offsetDays),
+          Math.max(1, WINDOW_DAYS + offsetDays),
+          ids,
+          query
+        );
+        if (ticket !== requestRef.current) return;
+        setGoogleEvents(list);
+        setError("");
+      } catch (err) {
+        if (ticket !== requestRef.current) return;
+        setError(err instanceof Error ? err.message : "Could not load your events.");
+      } finally {
+        if (ticket === requestRef.current) setLoading(false);
+      }
+    },
+    [cursor.year, cursor.month]
+  );
+
+  useEffect(() => {
+    if (googleConnected) loadCalendars();
+    else {
+      setCalendars([]);
+      setGoogleEvents([]);
+    }
+  }, [googleConnected, loadCalendars]);
+
+  // Debounced so typing in the search box doesn't fire a request per keystroke.
+  useEffect(() => {
+    if (!googleConnected) return;
+    const id = window.setTimeout(() => loadEvents(visibleCalendarIds, search.trim()), 250);
+    return () => window.clearTimeout(id);
+  }, [googleConnected, visibleCalendarIds, search, loadEvents]);
+
+  /** Google events plus any Daisy-only ones, indexed by day. */
+  const eventsByDay = useMemo(() => {
+    const unified: UnifiedEvent[] = [
+      ...googleEvents.map((e) => fromGoogle(e, calendars, colors)),
+      // Anything already carrying a googleId is the synced copy of an event we
+      // just fetched — showing both would duplicate every synced item.
+      ...events.filter((e) => !e.googleId).map(fromLocal),
+    ];
+
+    const filtered = search.trim()
+      ? unified.filter((e) =>
+          `${e.title} ${e.location} ${e.description}`.toLowerCase().includes(search.trim().toLowerCase())
+        )
+      : unified;
+
+    const map = new Map<string, UnifiedEvent[]>();
+    for (const event of filtered) {
+      for (const day of daysCovered(event)) {
+        const bucket = map.get(day);
+        if (bucket) bucket.push(event);
+        else map.set(day, [event]);
+      }
+    }
+    for (const bucket of map.values()) {
+      bucket.sort((a, b) => {
+        if (a.allDay !== b.allDay) return a.allDay ? -1 : 1;
+        return a.start.localeCompare(b.start);
+      });
+    }
+    return map;
+  }, [googleEvents, events, calendars, colors, search]);
+
+  const cells = useMemo(() => monthMatrix(cursor.year, cursor.month), [cursor]);
+  const selectedEvents = eventsByDay.get(selectedDate) || [];
+
+  const shiftMonth = (delta: number) => {
+    setCursor((c) => {
+      const d = new Date(c.year, c.month + delta, 1);
+      return { year: d.getFullYear(), month: d.getMonth() };
+    });
   };
 
-  const handleNextMonth = () => {
-    // Keep it on July 2026 for simulation sandbox consistency
+  const goToday = () => {
+    const now = new Date();
+    setCursor({ year: now.getFullYear(), month: now.getMonth() });
+    setSelectedDate(ymd(now));
   };
 
-  const handleAddEventSubmit = (e: React.FormEvent) => {
+  const refresh = async () => {
+    await loadCalendars();
+    await loadEvents(visibleCalendarIds, search.trim());
+    onGoogleSync?.();
+  };
+
+  const toggleCalendar = (id: string) => {
+    setHidden((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleQuickAdd = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newEventTitle.trim()) return;
-
-    // ISO formatted string
-    const dayStr = selectedDay < 10 ? `0${selectedDay}` : `${selectedDay}`;
-    const startISO = `2026-07-${dayStr}T${newEventTime}`;
-    // Calculate 1 hour duration
-    const [hours, mins] = newEventTime.split(":").map(Number);
-    const endHours = (hours + 1) % 24;
-    const endHoursStr = endHours < 10 ? `0${endHours}` : `${endHours}`;
-    const endISO = `2026-07-${dayStr}T${endHoursStr}:${mins < 10 ? `0${mins}` : mins}`;
-
-    // Auto-generate 3 category-specific checklist subtasks for detailed complexity!
-    let defaultSubtasks: Array<{ id: string; text: string; completed: boolean }> = [];
-    if (newEventCategory === "work") {
-      defaultSubtasks = [
-        { id: "s1", text: "Analyze specs & key details", completed: false },
-        { id: "s2", text: "Draft strategic action items", completed: false },
-        { id: "s3", text: "Verify results safety checklist", completed: false },
-      ];
-    } else if (newEventCategory === "personal") {
-      defaultSubtasks = [
-        { id: "s1", text: "De-clutter physical/digital desk", completed: false },
-        { id: "s2", text: "Map focus schedule milestones", completed: false },
-        { id: "s3", text: "Backup files & lock environment", completed: false },
-      ];
-    } else if (newEventCategory === "health") {
-      defaultSubtasks = [
-        { id: "s1", text: "Dynamic stretching & warm-up", completed: false },
-        { id: "s2", text: "Re-hydrate session (500ml H2O)", completed: false },
-        { id: "s3", text: "Calm breathing & cooldown loops", completed: false },
-      ];
-    } else if (newEventCategory === "media") {
-      defaultSubtasks = [
-        { id: "s1", text: "Preset audio synth parameters", completed: false },
-        { id: "s2", text: "Adjust sweepable lowpass sweep", completed: false },
-        { id: "s3", text: "Mute other distractive browser tabs", completed: false },
-      ];
-    } else { // AI category
-      defaultSubtasks = [
-        { id: "s1", text: "Initialize sandbox telemetry log", completed: false },
-        { id: "s2", text: "Verify neural connection integrity", completed: false },
-        { id: "s3", text: "Check offline containment sync", completed: false },
-      ];
-    }
-
-    onAddEvent({
-      title: newEventTitle,
-      start: startISO,
-      end: endISO,
-      category: newEventCategory,
-      description: "Custom sandbox agenda item",
-      completed: false,
-      priority: newEventPriority,
-      subtasks: defaultSubtasks,
-    });
-
-    setNewEventTitle("");
-  };
-
-  // Subtask Action Handlers
-  const handleToggleSubtask = (event: CalendarEvent, subtaskId: string) => {
-    if (!onUpdateEvent) return;
-    const subtasks = event.subtasks || [];
-    const updated = subtasks.map((sub) =>
-      sub.id === subtaskId ? { ...sub, completed: !sub.completed } : sub
-    );
-    onUpdateEvent({
-      ...event,
-      subtasks: updated,
-    });
-  };
-
-  const handleRemoveSubtask = (event: CalendarEvent, subtaskId: string) => {
-    if (!onUpdateEvent) return;
-    const subtasks = event.subtasks || [];
-    const updated = subtasks.filter((sub) => sub.id !== subtaskId);
-    onUpdateEvent({
-      ...event,
-      subtasks: updated,
-    });
-  };
-
-  const handleCreateSubtask = (event: CalendarEvent) => {
-    if (!onUpdateEvent) return;
-    const text = newSubtaskText[event.id]?.trim();
+    const text = quickAdd.trim();
     if (!text) return;
-
-    const newSub = {
-      id: crypto.randomUUID(),
-      text,
-      completed: false,
-    };
-
-    onUpdateEvent({
-      ...event,
-      subtasks: [...(event.subtasks || []), newSub],
-    });
-
-    setNewSubtaskText({ ...newSubtaskText, [event.id]: "" });
-  };
-
-  // Get active agenda for selected day
-  const getEventsForDay = (day: number) => {
-    const dayStr = day < 10 ? `2026-07-0${day}` : `2026-07-${day}`;
-    return events.filter((e) => e.start.startsWith(dayStr));
-  };
-
-  const selectedDayEvents = getEventsForDay(selectedDay);
-
-  const getCategoryColor = (cat?: string) => {
-    switch (cat) {
-      case "work":
-        return "bg-blue-50/75 border-blue-100 text-blue-800";
-      case "personal":
-        return "bg-pink-50/75 border-pink-100 text-pink-800";
-      case "health":
-        return "bg-emerald-50/75 border-emerald-100 text-emerald-800";
-      case "media":
-        return "bg-purple-50/75 border-purple-100 text-purple-800";
-      case "ai":
-        return "bg-amber-50/75 border-amber-100 text-amber-800";
-      default:
-        return "bg-zinc-50/75 border-zinc-100 text-zinc-800";
+    setQuickBusy(true);
+    try {
+      const created = await gcal.quickAdd(text, calendars.find((c) => c.primary)?.id || "primary");
+      setQuickAdd("");
+      setSelectedDate(created.start.slice(0, 10));
+      await loadEvents(visibleCalendarIds, "");
+      setSearch("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not add that event.");
+    } finally {
+      setQuickBusy(false);
     }
   };
 
-  const getPriorityBadge = (p?: "high" | "medium" | "low") => {
-    switch (p) {
-      case "high":
-        return (
-          <span className="inline-flex items-center gap-1 text-[8.5px] font-extrabold bg-rose-50 text-rose-600 px-1.5 py-0.5 rounded-md border border-rose-100 uppercase">
-            <span className="w-1.5 h-1.5 rounded-full bg-rose-500 animate-pulse" />
-            High
-          </span>
-        );
-      case "low":
-        return (
-          <span className="inline-flex items-center gap-1 text-[8.5px] font-extrabold bg-emerald-50 text-emerald-600 px-1.5 py-0.5 rounded-md border border-emerald-100 uppercase">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-            Low
-          </span>
-        );
-      case "medium":
-      default:
-        return (
-          <span className="inline-flex items-center gap-1 text-[8.5px] font-extrabold bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded-md border border-amber-100 uppercase">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-            Med
-          </span>
-        );
+  const handleSave = async (patch: GCalEventInput, isNew: boolean) => {
+    if (isNew) await gcal.createEvent(patch);
+    else if (editing?.googleId) await gcal.updateEvent(editing.googleId, patch);
+    setEditorOpen(false);
+    setEditing(null);
+    await loadEvents(visibleCalendarIds, search.trim());
+  };
+
+  const handleDeleteFromEditor = async () => {
+    if (editing?.googleId) {
+      await gcal.deleteEvent(editing.googleId, editing.calendarId || "primary");
+    } else if (editing?.localId) {
+      onDeleteEvent(editing.localId);
+    }
+    setEditorOpen(false);
+    setEditing(null);
+    await loadEvents(visibleCalendarIds, search.trim());
+  };
+
+  const handleRsvp = async (event: UnifiedEvent, response: "accepted" | "declined" | "tentative") => {
+    if (!event.googleId) return;
+    setBusyKey(event.key);
+    try {
+      await gcal.respond(event.googleId, event.calendarId || "primary", response);
+      await loadEvents(visibleCalendarIds, search.trim());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send your RSVP.");
+    } finally {
+      setBusyKey("");
     }
   };
+
+  const openNew = () => {
+    setEditing(null);
+    setEditorOpen(true);
+  };
+
+  const openEvent = (event: UnifiedEvent) => {
+    if (event.localId) return; // Daisy-only events are managed from the agent
+    setEditing(event);
+    setEditorOpen(true);
+  };
+
+  const myRsvp = (event: UnifiedEvent) => event.attendees.find((a) => a.self)?.responseStatus || "";
 
   return (
-    <div id="calendar_schedule_view" className="h-full max-md:h-auto flex flex-col p-4 md:p-6 text-zinc-800 overflow-hidden max-md:overflow-y-auto">
+    <div className="h-full max-md:h-auto flex flex-col p-4 md:p-6 text-zinc-800 overflow-hidden max-md:overflow-y-auto">
       {/* Header */}
-      <div className="flex items-center justify-between border-b border-zinc-200/60 pb-4 mb-4 gap-4 flex-shrink-0">
+      <div className="flex items-center justify-between border-b border-zinc-200/60 pb-4 mb-4 gap-4 flex-shrink-0 flex-wrap">
         <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-blue-500/10 border border-blue-500/20 rounded-2xl text-blue-600 shadow-sm relative">
+          <div className="p-2.5 bg-blue-500/10 border border-blue-500/20 rounded-2xl text-blue-600 shadow-sm">
             <CalendarIcon className="w-6 h-6" />
-            <span className="absolute -top-1 -right-1 w-3 h-3 bg-yellow-400 rounded-full border-2 border-white animate-pulse" />
           </div>
           <div>
-            <h1 className="text-lg font-extrabold text-zinc-900 tracking-tight">
-              Daisy Calendar Sync
-            </h1>
-            <p className="text-xs text-zinc-500 font-medium">Beautifully coordinated daily flow agenda 🌸</p>
+            <h1 className="text-lg font-extrabold text-zinc-900 tracking-tight">Calendar</h1>
+            <p className="text-xs text-zinc-500 font-medium">
+              {googleConnected ? "Synced with Google Calendar" : "Connect Google to see your schedule"}
+            </p>
           </div>
         </div>
 
-        {/* Navigation Indicator */}
-        <div className="flex items-center gap-2 bg-zinc-50 border border-zinc-200 p-1.5 rounded-2xl shadow-sm">
-          <button onClick={handlePrevMonth} className="p-1 hover:bg-white rounded-lg text-zinc-500 hover:text-zinc-800 cursor-pointer transition-colors">
-            <ChevronLeft className="w-4 h-4" />
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="relative">
+            <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-zinc-400" />
+            <input
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search events"
+              className="w-44 bg-zinc-50 border border-zinc-200 rounded-full pl-8 pr-7 py-1.5 text-xs font-medium text-zinc-800 placeholder-zinc-400 focus:outline-none focus:border-blue-400 focus:bg-white transition-colors"
+            />
+            {search && (
+              <button
+                onClick={() => setSearch("")}
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-zinc-700 cursor-pointer"
+              >
+                <X className="w-3 h-3" />
+              </button>
+            )}
+          </div>
+
+          <button
+            onClick={goToday}
+            className="px-3 py-1.5 rounded-full border border-zinc-200 bg-white text-[11px] font-bold text-zinc-600 hover:text-zinc-900 hover:border-zinc-300 cursor-pointer transition-colors"
+          >
+            Today
           </button>
-          <span className="text-xs font-extrabold font-mono px-2 text-zinc-700">
-            JULY 2026
-          </span>
-          <button onClick={handleNextMonth} className="p-1 hover:bg-white rounded-lg text-zinc-500 hover:text-zinc-800 cursor-pointer transition-colors">
-            <ChevronRight className="w-4 h-4" />
-          </button>
+
+          <div className="flex items-center gap-1 bg-zinc-50 border border-zinc-200 p-1 rounded-full">
+            <button
+              onClick={() => shiftMonth(-1)}
+              className="p-1.5 hover:bg-white rounded-full text-zinc-500 hover:text-zinc-900 cursor-pointer transition-colors"
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </button>
+            <span className="text-xs font-extrabold px-2 text-zinc-700 min-w-[104px] text-center">
+              {monthLabel(cursor.year, cursor.month)}
+            </span>
+            <button
+              onClick={() => shiftMonth(1)}
+              className="p-1.5 hover:bg-white rounded-full text-zinc-500 hover:text-zinc-900 cursor-pointer transition-colors"
+            >
+              <ChevronRight className="w-4 h-4" />
+            </button>
+          </div>
+
+          {googleConnected && (
+            <button
+              onClick={openNew}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full bg-zinc-900 hover:bg-zinc-800 text-white text-[11px] font-bold cursor-pointer transition-all active:scale-95"
+            >
+              <Plus className="w-3.5 h-3.5 stroke-[3]" /> New
+            </button>
+          )}
         </div>
       </div>
 
-      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-0">
-        {/* Left Column: Calendar Grid (lg:col-span-7) */}
-        <div className="lg:col-span-7 flex flex-col bg-zinc-50/80 border border-zinc-200/60 rounded-[28px] p-4 md:p-6 min-h-[420px] lg:h-full lg:min-h-0 shadow-inner justify-between gap-4">
-          <div>
-            {/* Days of week */}
-            <div className="grid grid-cols-7 text-center font-bold text-[10px] text-zinc-400 uppercase tracking-widest mb-3">
-              <span>Sun</span>
-              <span>Mon</span>
-              <span>Tue</span>
-              <span>Wed</span>
-              <span>Thu</span>
-              <span>Fri</span>
-              <span>Sat</span>
-            </div>
+      {/* Connection bar */}
+      <div className="mb-4 flex items-center justify-between gap-3 flex-wrap bg-white/60 border border-white/70 rounded-2xl px-4 py-2.5 flex-shrink-0">
+        <div className="flex items-center gap-2 min-w-0">
+          <span
+            className={`w-2 h-2 rounded-full flex-shrink-0 ${
+              googleConnected ? "bg-emerald-500" : "bg-zinc-300"
+            }`}
+          />
+          <div className="min-w-0">
+            <p className="text-xs font-bold text-zinc-700 truncate">
+              {googleConnected ? "Google Calendar connected" : "Google Calendar not connected"}
+            </p>
+            <p className="text-[10px] text-zinc-400 truncate">
+              {error || googleError
+                ? error || googleError
+                : googleConnected
+                ? googleLastSync
+                  ? `${calendars.length} calendar${calendars.length === 1 ? "" : "s"} · last synced ${googleLastSync}`
+                  : `${calendars.length} calendar${calendars.length === 1 ? "" : "s"}`
+                : "Connect to pull your real events into Daisy."}
+            </p>
+          </div>
+        </div>
 
-            {/* Monthly grid */}
-            <div className="grid grid-cols-7 gap-1.5">
-              {/* Pre-fill empty days offset */}
-              {Array.from({ length: startDayOfWeek }).map((_, idx) => (
-                <div key={`offset-${idx}`} className="h-12 sm:h-14 p-1 opacity-20" />
-              ))}
+        <div className="flex items-center gap-2 flex-shrink-0">
+          {googleConnected ? (
+            <>
+              <button
+                onClick={refresh}
+                disabled={googleSyncing || loading}
+                className="flex items-center gap-1.5 text-[11px] font-bold text-zinc-600 hover:text-zinc-900 disabled:opacity-50 cursor-pointer disabled:cursor-default"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${googleSyncing || loading ? "animate-spin" : ""}`} />
+                {googleSyncing || loading ? "Syncing…" : "Sync now"}
+              </button>
+              <button
+                onClick={onGoogleDisconnect}
+                className="text-[11px] font-bold text-zinc-500 hover:text-rose-600 cursor-pointer"
+              >
+                Disconnect
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={onGoogleConnect}
+              className="flex items-center gap-1.5 bg-zinc-900 hover:bg-zinc-800 text-white text-[11px] font-bold px-3.5 py-1.5 rounded-full transition-all active:scale-95 cursor-pointer"
+            >
+              <LinkIcon className="w-3 h-3" /> Connect Google Calendar
+            </button>
+          )}
+        </div>
+      </div>
 
-              {/* Real July Days */}
-              {Array.from({ length: daysInMonth }).map((_, idx) => {
-                const day = idx + 1;
-                const isToday = day === 21; // Match metadata current time date (July 21)
-                const isSelected = day === selectedDay;
-                const dayEvents = getEventsForDay(day);
+      <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-5 min-h-0">
+        {/* Month grid */}
+        <div className="lg:col-span-8 flex flex-col bg-white border border-zinc-200/70 rounded-[28px] p-4 md:p-5 min-h-[460px] lg:h-full lg:min-h-0 shadow-sm">
+          <div className="grid grid-cols-7 text-center font-bold text-[10px] text-zinc-400 uppercase tracking-widest mb-2">
+            {WEEKDAYS.map((d) => (
+              <span key={d}>{d}</span>
+            ))}
+          </div>
 
-                return (
-                  <motion.div
-                    key={`day-${day}`}
-                    whileHover={{ scale: 1.02 }}
-                    onClick={() => setSelectedDay(day)}
-                    className={`h-12 sm:h-14 p-1.5 rounded-2xl border flex flex-col justify-between transition-all cursor-pointer relative group ${
-                      isSelected
-                        ? "bg-white border-blue-400 shadow-md ring-2 ring-blue-400/10 text-zinc-900"
-                        : isToday
-                        ? "bg-blue-50/70 border border-blue-400 text-blue-700 font-extrabold"
-                        : "bg-white/80 border-zinc-200/60 hover:bg-white hover:border-zinc-300 text-zinc-700"
+          <div className="grid grid-cols-7 gap-1.5 flex-1 min-h-0 auto-rows-fr">
+            {cells.map(({ date, inMonth }) => {
+              const dayEvents = eventsByDay.get(date) || [];
+              const isToday = date === today;
+              const isSelected = date === selectedDate;
+              const dayNumber = Number(date.slice(8, 10));
+
+              return (
+                <motion.button
+                  key={date}
+                  whileHover={{ scale: 1.015 }}
+                  onClick={() => setSelectedDate(date)}
+                  onDoubleClick={() => {
+                    setSelectedDate(date);
+                    if (googleConnected) openNew();
+                  }}
+                  className={`text-left p-1.5 rounded-2xl border flex flex-col gap-1 transition-all cursor-pointer overflow-hidden min-h-[58px] ${
+                    isSelected
+                      ? "bg-blue-50/70 border-blue-400 ring-2 ring-blue-400/15"
+                      : isToday
+                      ? "bg-white border-blue-300"
+                      : inMonth
+                      ? "bg-white border-zinc-200/70 hover:border-zinc-300"
+                      : "bg-zinc-50/60 border-transparent"
+                  }`}
+                >
+                  <span
+                    className={`text-[11px] font-bold leading-none flex items-center gap-1 ${
+                      isToday
+                        ? "text-white bg-blue-600 rounded-full w-5 h-5 justify-center"
+                        : inMonth
+                        ? "text-zinc-700"
+                        : "text-zinc-300"
                     }`}
                   >
-                    <span className="text-xs font-mono font-bold flex items-center">
-                      {day}
-                      {isToday && (
-                        <span className="inline-block ml-1 w-1.5 h-1.5 bg-blue-500 rounded-full animate-ping" />
-                      )}
-                    </span>
+                    {dayNumber}
+                  </span>
 
-                    {/* Miniature event indicator blobs */}
-                    <div className="flex gap-0.5 flex-wrap max-h-5 overflow-hidden">
-                      {dayEvents.slice(0, 3).map((e) => (
+                  <div className="flex flex-col gap-0.5 overflow-hidden">
+                    {dayEvents.slice(0, 3).map((e) => (
+                      <span
+                        key={e.key}
+                        title={e.title}
+                        className="flex items-center gap-1 min-w-0"
+                      >
                         <span
-                          key={e.id}
-                          className={`w-1.5 h-1.5 rounded-full ${
-                            e.category === "work"
-                              ? "bg-blue-400"
-                              : e.category === "personal"
-                              ? "bg-pink-400"
-                              : e.category === "health"
-                              ? "bg-emerald-400"
-                              : e.category === "media"
-                              ? "bg-purple-400"
-                              : "bg-amber-400"
-                          }`}
+                          className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+                          style={{ backgroundColor: e.color }}
                         />
-                      ))}
-                      {dayEvents.length > 3 && (
-                        <span className="text-[7px] font-mono leading-none text-zinc-400">
-                          +{dayEvents.length - 3}
+                        <span className="text-[9px] font-semibold text-zinc-600 truncate leading-tight">
+                          {e.allDay ? e.title : `${formatClock(e.start.slice(11))} ${e.title}`}
                         </span>
-                      )}
-                    </div>
-                  </motion.div>
+                      </span>
+                    ))}
+                    {dayEvents.length > 3 && (
+                      <span className="text-[8px] font-bold text-zinc-400 pl-2.5">
+                        +{dayEvents.length - 3} more
+                      </span>
+                    )}
+                  </div>
+                </motion.button>
+              );
+            })}
+          </div>
+
+          {/* Calendar visibility */}
+          {calendars.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-zinc-100 flex flex-wrap gap-1.5">
+              {calendars.map((c) => {
+                const on = !hidden.has(c.id);
+                return (
+                  <button
+                    key={c.id}
+                    onClick={() => toggleCalendar(c.id)}
+                    title={c.canEdit ? c.summary : `${c.summary} (read-only)`}
+                    className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] font-bold transition-all cursor-pointer max-w-[190px] ${
+                      on
+                        ? "bg-white border-zinc-200 text-zinc-700"
+                        : "bg-zinc-50 border-transparent text-zinc-400"
+                    }`}
+                  >
+                    <span
+                      className="w-2.5 h-2.5 rounded-full flex-shrink-0 border"
+                      style={{
+                        backgroundColor: on ? c.backgroundColor : "transparent",
+                        borderColor: c.backgroundColor,
+                      }}
+                    />
+                    <span className="truncate">{c.summary}</span>
+                  </button>
                 );
               })}
             </div>
-          </div>
-
-          {/* Quick Scheduler form footer */}
-          <form
-            onSubmit={handleAddEventSubmit}
-            className="mt-2 pt-4 border-t border-zinc-200/60 flex flex-col gap-3.5"
-          >
-            <div className="w-full space-y-1">
-              <label className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider block">
-                Schedule Event (July {selectedDay}, 2026)
-              </label>
-              <input
-                type="text"
-                value={newEventTitle}
-                onChange={(e) => setNewEventTitle(e.target.value)}
-                placeholder="Meeting, session, exercise..."
-                className="w-full bg-white border border-zinc-200 rounded-xl px-3.5 py-2 text-xs focus:outline-none focus:ring-2 focus:ring-blue-300/50 focus:border-blue-400 text-zinc-800 placeholder-zinc-400 shadow-sm"
-              />
-            </div>
-
-            <div className="flex flex-wrap items-center gap-2.5">
-              <div className="flex-1 min-w-[80px]">
-                <input
-                  type="time"
-                  value={newEventTime}
-                  onChange={(e) => setNewEventTime(e.target.value)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-2 py-1.5 text-xs text-center text-zinc-800 focus:outline-none focus:border-blue-400"
-                />
-              </div>
-
-              <div className="flex-1 min-w-[90px]">
-                <select
-                  value={newEventCategory}
-                  onChange={(e: any) => setNewEventCategory(e.target.value)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 focus:outline-none focus:border-blue-400 cursor-pointer font-bold"
-                >
-                  <option value="work">💼 Work</option>
-                  <option value="personal">🏡 Personal</option>
-                  <option value="health">🍀 Health</option>
-                  <option value="media">🎵 Media</option>
-                  <option value="ai">🤖 AI Sync</option>
-                </select>
-              </div>
-
-              <div className="flex-1 min-w-[90px]">
-                <select
-                  value={newEventPriority}
-                  onChange={(e: any) => setNewEventPriority(e.target.value)}
-                  className="w-full bg-white border border-zinc-200 rounded-xl px-2.5 py-1.5 text-xs text-zinc-800 focus:outline-none focus:border-blue-400 cursor-pointer font-bold"
-                >
-                  <option value="high">🔴 High</option>
-                  <option value="medium">🟡 Medium</option>
-                  <option value="low">🟢 Low</option>
-                </select>
-              </div>
-
-              <button
-                type="submit"
-                className="px-3 py-1.5 bg-gradient-to-r from-blue-400 to-indigo-500 hover:from-blue-500 hover:to-indigo-600 text-white rounded-xl cursor-pointer flex items-center justify-center shadow-md hover:scale-105 active:scale-95 transition-all h-9"
-              >
-                <Plus className="w-4 h-4 stroke-[3] mr-1" />
-                <span className="text-[10px] font-extrabold uppercase">Add</span>
-              </button>
-            </div>
-          </form>
+          )}
         </div>
 
-        {/* Right Column: Timeline Agenda (lg:col-span-5) */}
-        <div className="lg:col-span-5 flex flex-col bg-white border border-zinc-150 rounded-[28px] p-5 md:p-6 min-h-[350px] lg:h-full lg:min-h-0 shadow-sm">
-          <div className="mb-4">
-            <h3 className="text-sm font-extrabold text-zinc-800">Agenda Timeline</h3>
-            <p className="text-xs text-zinc-500 font-medium">
-              July {selectedDay}, 2026 agenda checklist
-            </p>
+        {/* Day agenda */}
+        <div className="lg:col-span-4 flex flex-col bg-white border border-zinc-200/70 rounded-[28px] p-5 min-h-[380px] lg:h-full lg:min-h-0 shadow-sm">
+          <div className="mb-3 flex-shrink-0">
+            <h3 className="text-sm font-extrabold text-zinc-800">
+              {selectedDate === today ? "Today" : parseDay(selectedDate).toLocaleDateString(undefined, { weekday: "long" })}
+            </h3>
+            <p className="text-[11px] text-zinc-500 font-medium">{formatLongDate(selectedDate)}</p>
           </div>
 
-          {/* Agenda items list */}
-          <div className="flex-1 overflow-y-auto space-y-3.5 pr-1">
-            <AnimatePresence>
-              {selectedDayEvents.length > 0 ? (
-                selectedDayEvents
-                  .sort((a, b) => a.start.localeCompare(b.start))
-                  .map((e) => {
-                    const subtasks = e.subtasks || [];
-                    const completedSubs = subtasks.filter(s => s.completed).length;
-                    const totalSubs = subtasks.length;
-                    const subProgressPct = totalSubs > 0 ? (completedSubs / totalSubs) * 100 : 0;
-                    const isExpanded = expandedEventId === e.id;
+          {googleConnected && (
+            <form onSubmit={handleQuickAdd} className="mb-3 flex-shrink-0">
+              <div className="relative">
+                <Sparkles className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-amber-500" />
+                <input
+                  value={quickAdd}
+                  onChange={(e) => setQuickAdd(e.target.value)}
+                  placeholder='Try "Lunch Friday at 1pm"'
+                  className="w-full bg-zinc-50 border border-zinc-200 rounded-full pl-8 pr-9 py-2 text-[11px] font-medium text-zinc-800 placeholder-zinc-400 focus:outline-none focus:border-amber-400 focus:bg-white transition-colors"
+                />
+                <button
+                  type="submit"
+                  disabled={quickBusy || !quickAdd.trim()}
+                  className="absolute right-1.5 top-1/2 -translate-y-1/2 p-1.5 rounded-full bg-zinc-900 text-white disabled:opacity-30 disabled:cursor-default cursor-pointer transition-all active:scale-90"
+                >
+                  {quickBusy ? (
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                  ) : (
+                    <Plus className="w-3 h-3 stroke-[3]" />
+                  )}
+                </button>
+              </div>
+            </form>
+          )}
 
-                    return (
-                      <motion.div
-                        key={e.id}
-                        initial={{ opacity: 0, x: 10 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        exit={{ opacity: 0, x: -10 }}
-                        className={`p-3.5 rounded-2xl border flex flex-col gap-2 shadow-sm relative overflow-hidden transition-all duration-200 ${getCategoryColor(
-                          e.category
-                        )}`}
-                      >
-                        {/* Event main row layout */}
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex items-start gap-2.5 min-w-0 flex-1">
-                            {/* Completion checkbox toggler */}
-                            <button
-                              onClick={() => onToggleComplete(e.id)}
-                              className="flex-shrink-0 cursor-pointer mt-0.5 focus:outline-none"
+          <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 min-h-0">
+            <AnimatePresence mode="popLayout">
+              {selectedEvents.length > 0 ? (
+                selectedEvents.map((e) => {
+                  const rsvp = myRsvp(e);
+                  const repeat = describeRecurrence(e.recurrence);
+                  return (
+                    <motion.div
+                      key={e.key}
+                      layout
+                      initial={{ opacity: 0, y: 6 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      exit={{ opacity: 0, y: -6 }}
+                      onClick={() => openEvent(e)}
+                      className={`group relative p-3 pl-4 rounded-2xl border bg-white hover:border-zinc-300 hover:shadow-sm transition-all overflow-hidden ${
+                        e.localId ? "border-zinc-200" : "border-zinc-200 cursor-pointer"
+                      } ${e.completed ? "opacity-60" : ""}`}
+                    >
+                      {/* Calendar colour spine */}
+                      <span
+                        className="absolute left-0 top-0 bottom-0 w-1.5"
+                        style={{ backgroundColor: e.color }}
+                      />
+
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <h4
+                              className={`text-xs font-bold text-zinc-800 leading-snug ${
+                                e.completed ? "line-through" : ""
+                              }`}
                             >
-                              {e.completed ? (
-                                <div className="w-4.5 h-4.5 rounded-full bg-emerald-500 text-white flex items-center justify-center shadow-sm">
-                                  <Check className="w-3 h-3 stroke-[3]" />
-                                </div>
-                              ) : (
-                                <div className="w-4.5 h-4.5 rounded-full border-2 border-zinc-300 hover:border-zinc-400 bg-white" />
-                              )}
-                            </button>
-
-                            <div className="min-w-0 flex-1">
-                              <div className="flex flex-wrap items-center gap-1.5">
-                                <h4
-                                  className={`text-xs font-bold leading-snug truncate ${
-                                    e.completed ? "line-through opacity-50 text-zinc-400" : "text-zinc-800"
-                                  }`}
-                                >
-                                  {e.title}
-                                </h4>
-                                {getPriorityBadge(e.priority)}
-                              </div>
-                              
-                              <div className="flex items-center gap-1.5 mt-1 text-[9px] font-semibold text-zinc-500">
-                                <Clock className="w-3 h-3" />
-                                <span>
-                                  {e.start.split("T")[1]} - {e.end.split("T")[1]}
-                                </span>
-                              </div>
-                            </div>
+                              {e.title}
+                            </h4>
+                            {repeat && (
+                              <span className="inline-flex items-center gap-0.5 text-[8.5px] font-extrabold uppercase text-indigo-600 bg-indigo-50 border border-indigo-100 px-1.5 py-0.5 rounded-md">
+                                <Repeat className="w-2.5 h-2.5" /> {repeat}
+                              </span>
+                            )}
+                            {e.readOnly && (
+                              <span className="text-[8.5px] font-extrabold uppercase text-zinc-500 bg-zinc-100 px-1.5 py-0.5 rounded-md">
+                                Read-only
+                              </span>
+                            )}
                           </div>
 
-                          <button
-                            onClick={() => onDeleteEvent(e.id)}
-                            className="text-zinc-400 hover:text-rose-500 cursor-pointer transition-colors p-1"
-                          >
-                            <Trash className="w-3.5 h-3.5" />
-                          </button>
+                          <div className="flex items-center gap-1.5 mt-1 text-[10px] font-semibold text-zinc-500">
+                            <Clock className="w-3 h-3 flex-shrink-0" />
+                            <span>
+                              {e.allDay
+                                ? "All day"
+                                : `${formatClock(e.start.slice(11))} – ${formatClock(e.end.slice(11))}`}
+                            </span>
+                          </div>
+
+                          {e.location && (
+                            <div className="flex items-center gap-1.5 mt-1 text-[10px] font-medium text-zinc-500 min-w-0">
+                              <MapPin className="w-3 h-3 flex-shrink-0" />
+                              <span className="truncate">{e.location}</span>
+                            </div>
+                          )}
+
+                          {e.attendees.length > 0 && (
+                            <div className="flex items-center gap-1.5 mt-1 text-[10px] font-medium text-zinc-500">
+                              <Users className="w-3 h-3 flex-shrink-0" />
+                              <span>
+                                {e.attendees.length} guest{e.attendees.length === 1 ? "" : "s"}
+                                {(() => {
+                                  const yes = e.attendees.filter((a) => a.responseStatus === "accepted").length;
+                                  return yes ? ` · ${yes} yes` : "";
+                                })()}
+                              </span>
+                            </div>
+                          )}
+
+                          {!e.reminders.useDefault && e.reminders.overrides[0] && (
+                            <div className="flex items-center gap-1.5 mt-1 text-[10px] font-medium text-zinc-400">
+                              <Bell className="w-3 h-3 flex-shrink-0" />
+                              <span>{e.reminders.overrides[0].minutes} min before</span>
+                            </div>
+                          )}
+
+                          <div className="flex items-center gap-2 mt-1.5">
+                            <span className="text-[9px] font-bold text-zinc-400 truncate max-w-[130px]">
+                              {e.calendarName}
+                            </span>
+                            {e.meetLink && (
+                              <a
+                                href={e.meetLink}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={(ev) => ev.stopPropagation()}
+                                className="inline-flex items-center gap-1 text-[9px] font-extrabold text-emerald-700 bg-emerald-50 border border-emerald-100 px-1.5 py-0.5 rounded-md hover:bg-emerald-100 cursor-pointer"
+                              >
+                                <Video className="w-2.5 h-2.5" /> Join
+                              </a>
+                            )}
+                            {e.htmlLink && (
+                              <a
+                                href={e.htmlLink}
+                                target="_blank"
+                                rel="noreferrer"
+                                onClick={(ev) => ev.stopPropagation()}
+                                className="inline-flex items-center gap-1 text-[9px] font-bold text-zinc-400 hover:text-zinc-700 cursor-pointer"
+                              >
+                                <ExternalLink className="w-2.5 h-2.5" /> Google
+                              </a>
+                            )}
+                          </div>
                         </div>
 
-                        {/* Collapsed view checklist mini bar progress */}
-                        {totalSubs > 0 && (
-                          <div className="w-full mt-1">
-                            <div className="flex justify-between items-center text-[8.5px] font-extrabold text-zinc-400 uppercase tracking-wider">
-                              <button
-                                onClick={(ev) => {
-                                  ev.stopPropagation();
-                                  setExpandedEventId(isExpanded ? null : e.id);
-                                }}
-                                className="flex items-center gap-1 text-indigo-600 hover:text-indigo-800 transition-colors cursor-pointer"
-                              >
-                                <ListTodo className="w-3 h-3 text-indigo-500" />
-                                <span>Subtasks ({completedSubs}/{totalSubs})</span>
-                                {isExpanded ? (
-                                  <ChevronUp className="w-3 h-3" />
-                                ) : (
-                                  <ChevronDown className="w-3 h-3" />
-                                )}
-                              </button>
-                              <span>{Math.round(subProgressPct)}% done</span>
-                            </div>
-                            <div className="h-1 bg-zinc-200/80 rounded-full overflow-hidden mt-1.5">
-                              <div
-                                className="h-full bg-gradient-to-r from-amber-400 to-indigo-500 rounded-full transition-all duration-300"
-                                style={{ width: `${subProgressPct}%` }}
-                              />
-                            </div>
+                        {e.localId && (
+                          <div className="flex items-center gap-1 flex-shrink-0">
+                            <button
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                onToggleComplete(e.localId!);
+                              }}
+                              className="p-1 cursor-pointer"
+                              title="Mark done"
+                            >
+                              {e.completed ? (
+                                <span className="w-4 h-4 rounded-full bg-emerald-500 text-white flex items-center justify-center">
+                                  <Check className="w-2.5 h-2.5 stroke-[3]" />
+                                </span>
+                              ) : (
+                                <span className="w-4 h-4 rounded-full border-2 border-zinc-300 block" />
+                              )}
+                            </button>
+                            <button
+                              onClick={(ev) => {
+                                ev.stopPropagation();
+                                onDeleteEvent(e.localId!);
+                              }}
+                              className="p-1 text-zinc-300 hover:text-rose-500 cursor-pointer"
+                              title="Delete"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
                           </div>
                         )}
+                      </div>
 
-                        {/* Expanded subtask details dashboard */}
-                        {isExpanded && totalSubs > 0 && (
-                          <div className="mt-2.5 pt-2.5 border-t border-zinc-200/50 space-y-2">
-                            {subtasks.map((sub) => (
-                              <div key={sub.id} className="flex items-center justify-between gap-2 pl-1 bg-white/45 p-1.5 rounded-lg border border-zinc-150/40">
-                                <button
-                                  onClick={() => handleToggleSubtask(e, sub.id)}
-                                  className="flex items-center gap-2 text-left min-w-0 cursor-pointer focus:outline-none flex-1"
-                                >
-                                  {sub.completed ? (
-                                    <CheckSquare className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
-                                  ) : (
-                                    <Square className="w-3.5 h-3.5 text-zinc-400 hover:text-zinc-500 shrink-0" />
-                                  )}
-                                  <span className={`text-[10px] font-bold leading-tight truncate ${sub.completed ? "line-through text-zinc-400 opacity-60 font-medium" : "text-zinc-700"}`}>
-                                    {sub.text}
-                                  </span>
-                                </button>
-                                <button
-                                  onClick={() => handleRemoveSubtask(e, sub.id)}
-                                  className="text-zinc-300 hover:text-rose-500 text-[10px] p-0.5 cursor-pointer leading-none font-bold"
-                                >
-                                  &times;
-                                </button>
-                              </div>
-                            ))}
-
-                            {/* Inline quick append custom subtask form */}
-                            <div className="flex items-center gap-1.5 mt-2">
-                              <input
-                                type="text"
-                                placeholder="Add custom step..."
-                                value={newSubtaskText[e.id] || ""}
-                                onChange={(ev) => setNewSubtaskText({ ...newSubtaskText, [e.id]: ev.target.value })}
-                                onKeyDown={(ev) => {
-                                  if (ev.key === "Enter") {
-                                    ev.preventDefault();
-                                    handleCreateSubtask(e);
-                                  }
-                                }}
-                                className="flex-1 bg-white border border-zinc-200 rounded-lg px-2.5 py-1 text-[10px] focus:outline-none focus:border-indigo-400 text-zinc-800 placeholder-zinc-400 font-medium"
-                              />
-                              <button
-                                type="button"
-                                onClick={() => handleCreateSubtask(e)}
-                                className="px-2 py-1 bg-zinc-100 hover:bg-zinc-200 border border-zinc-250 rounded-lg text-[9.5px] font-extrabold text-zinc-600 cursor-pointer transition-all"
-                              >
-                                Add
-                              </button>
-                            </div>
-                          </div>
-                        )}
-                      </motion.div>
-                    );
-                  })
+                      {/* RSVP for invitations */}
+                      {rsvp && rsvp !== "accepted" && (
+                        <div
+                          className="flex items-center gap-1.5 mt-2 pt-2 border-t border-zinc-100"
+                          onClick={(ev) => ev.stopPropagation()}
+                        >
+                          <span className="text-[9px] font-bold text-zinc-400 uppercase">Going?</span>
+                          {(["accepted", "tentative", "declined"] as const).map((r) => (
+                            <button
+                              key={r}
+                              disabled={busyKey === e.key}
+                              onClick={() => handleRsvp(e, r)}
+                              className={`text-[9px] font-extrabold px-2 py-0.5 rounded-full border cursor-pointer transition-colors disabled:opacity-40 ${
+                                rsvp === r
+                                  ? "bg-zinc-900 text-white border-zinc-900"
+                                  : "bg-white text-zinc-600 border-zinc-200 hover:border-zinc-400"
+                              }`}
+                            >
+                              {r === "accepted" ? "Yes" : r === "tentative" ? "Maybe" : "No"}
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </motion.div>
+                  );
+                })
               ) : (
-                <div className="h-full flex flex-col items-center justify-center text-center py-12">
+                <div className="h-full flex flex-col items-center justify-center text-center py-10">
                   <div className="w-12 h-12 rounded-full bg-zinc-50 border border-zinc-200 flex items-center justify-center text-zinc-300 mb-3">
-                    <Clock className="w-6 h-6" />
+                    {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Clock className="w-6 h-6" />}
                   </div>
-                  <h4 className="text-xs font-bold text-zinc-700">No events logged</h4>
-                  <p className="text-[10px] text-zinc-500 max-w-xs px-4 mt-1 font-medium leading-relaxed">
-                    Select a day or request DAISY to schedule your sessions automatically.
+                  <h4 className="text-xs font-bold text-zinc-700">
+                    {loading ? "Loading…" : search ? "No matches" : "Nothing scheduled"}
+                  </h4>
+                  <p className="text-[10px] text-zinc-500 max-w-[210px] mt-1 font-medium leading-relaxed">
+                    {search
+                      ? "Try a different search term."
+                      : googleConnected
+                      ? "Add an event above, or ask Daisy to schedule it for you."
+                      : "Connect Google Calendar to see your real schedule."}
                   </p>
                 </div>
               )}
@@ -563,6 +722,31 @@ export default function CalendarSchedule({
           </div>
         </div>
       </div>
+
+      {error && (
+        <div className="mt-3 flex items-center gap-2 text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-100 rounded-xl px-3 py-2 flex-shrink-0">
+          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+          <span className="truncate">{error}</span>
+          <button onClick={() => setError("")} className="ml-auto cursor-pointer hover:text-rose-900">
+            <X className="w-3 h-3" />
+          </button>
+        </div>
+      )}
+
+      {editorOpen && (
+        <EventEditor
+          event={editing}
+          defaultDate={selectedDate}
+          calendars={calendars}
+          colors={colors}
+          onClose={() => {
+            setEditorOpen(false);
+            setEditing(null);
+          }}
+          onSave={handleSave}
+          onDelete={editing ? handleDeleteFromEditor : undefined}
+        />
+      )}
     </div>
   );
 }

@@ -42,6 +42,10 @@ SCOPES = " ".join([
     "playlist-read-private",
     "playlist-read-collaborative",
     "user-library-read",
+    # Needed to like/unlike the playing track. Adding a scope invalidates the
+    # consent already granted, so an existing connection must be re-authorized
+    # before /save works — everything else keeps working meanwhile.
+    "user-library-modify",
 ])
 
 def _client_id() -> str:
@@ -583,6 +587,90 @@ async def shuffle(request: Request) -> JSONResponse:
     try:
         await _api("PUT", "/me/player/shuffle", params={"state": str(state).lower()})
         return JSONResponse(content={"ok": True, "state": state})
+    except SpotifyError as err:
+        return _error_response(err)
+
+
+@router.put("/repeat")
+async def repeat(request: Request) -> JSONResponse:
+    """Set repeat mode: 'off', 'context' (repeat playlist/album), or 'track'."""
+    body = await request.json()
+    mode = str(body.get("mode", "off")).lower()
+    if mode not in ("off", "context", "track"):
+        return JSONResponse(status_code=400, content={"error": "mode must be off, context or track"})
+    try:
+        await _api("PUT", "/me/player/repeat", params={"state": mode})
+        return JSONResponse(content={"ok": True, "mode": mode})
+    except SpotifyError as err:
+        return _error_response(err)
+
+
+@router.put("/seek")
+async def seek(request: Request) -> JSONResponse:
+    """Jump to an absolute position, or move relative to the current one.
+
+    Relative seeks need the current position, so they read the player first —
+    that's what makes "skip ahead thirty seconds" possible.
+    """
+    body = await request.json()
+    try:
+        if body.get("relativeMs") is not None:
+            state = await _api("GET", "/me/player") or {}
+            current = int(state.get("progress_ms") or 0)
+            duration = int(((state.get("item") or {}).get("duration_ms")) or 0)
+            target = current + int(body["relativeMs"])
+        else:
+            target = int(body.get("positionMs", 0))
+            duration = 0
+        target = max(0, target)
+        if duration:
+            # Seeking past the end errors; land just short of it instead.
+            target = min(target, max(0, duration - 1000))
+        await _api("PUT", "/me/player/seek", params={"position_ms": target})
+        return JSONResponse(content={"ok": True, "positionMs": target})
+    except SpotifyError as err:
+        return _error_response(err)
+
+
+@router.post("/queue")
+async def queue(request: Request) -> JSONResponse:
+    """Queue a track to play next. Accepts a URI or a search phrase."""
+    body = await request.json()
+    uri = body.get("uri")
+    query = (body.get("query") or "").strip()
+    try:
+        if not uri:
+            if not query:
+                return JSONResponse(status_code=400, content={"error": "uri or query is required"})
+            found = await _api("GET", "/search", params={"q": query, "type": "track", "limit": 1}) or {}
+            items = [i for i in ((found.get("tracks") or {}).get("items") or []) if i]
+            if not items:
+                raise SpotifyError(404, f"Couldn't find a song matching '{query}'.")
+            uri, name = items[0].get("uri"), items[0].get("name")
+        else:
+            name = None
+        await _api("POST", "/me/player/queue", params={"uri": uri})
+        return JSONResponse(content={"ok": True, "uri": uri, "name": name})
+    except SpotifyError as err:
+        return _error_response(err)
+
+
+@router.put("/save")
+async def save_current(request: Request) -> JSONResponse:
+    """Like/unlike a track (defaults to whatever is playing right now)."""
+    body = await request.json()
+    save = bool(body.get("save", True))
+    track_id = body.get("trackId")
+    try:
+        if not track_id:
+            state = await _api("GET", "/me/player/currently-playing") or {}
+            track_id = ((state.get("item") or {}).get("id"))
+            if not track_id:
+                raise SpotifyError(404, "Nothing is playing right now.")
+        await _api(
+            "PUT" if save else "DELETE", "/me/tracks", params={"ids": track_id}
+        )
+        return JSONResponse(content={"ok": True, "saved": save, "trackId": track_id})
     except SpotifyError as err:
         return _error_response(err)
 

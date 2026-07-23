@@ -4,7 +4,7 @@
  * inside the browser using standard Web Crypto APIs.
  */
 
-const SALT = "jarvis_omni_secure_salt_2026"; // Consistent salt for derivation
+const SALT = "daisy_omni_secure_salt_2026"; // Consistent salt for derivation
 const ITERATIONS = 100000;
 
 // Derive a CryptoKey from a plain-text password

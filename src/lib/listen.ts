@@ -120,8 +120,21 @@ class DaisyListener {
   private partialFinalText = "";
   private partialInterimText = "";
 
+  /** True while Apple's recognizer is driving transcription instead of Whisper. */
+  private native = false;
+  private nativeUnsubscribe: (() => void) | null = null;
+  private nativePaused = false;
+  /** Bumped on every start/stop so late events from an old helper are ignored. */
+  private nativeSession = 0;
+
   isActive(): boolean {
     return this.running;
+  }
+
+  /** Which engine is producing transcripts right now. */
+  getEngine(): "apple" | "whisper" | "none" {
+    if (!this.running) return "none";
+    return this.native ? "apple" : "whisper";
   }
 
   /** Current normalized mic loudness (0..1) — for visualizers. */
@@ -176,7 +189,112 @@ class DaisyListener {
     this.noiseFloor = 0.01;
     this.running = true;
     this.setState("listening");
+
+    // Start on the Whisper path, then offer the mic to Apple's on-device
+    // recognizer: it streams partials and returns a transcript the moment you
+    // stop talking, whereas Whisper can only begin decoding once the whole
+    // utterance has been captured. If it comes up it takes over on "ready";
+    // if it never does, nothing changes and Whisper carries on.
     this.startSpeechRecognition();
+    void this.startNative();
+  }
+
+  /**
+   * Attempt to hand transcription to Apple's recognizer via the Electron main
+   * process. Silently leaves `native` false on any platform or build where the
+   * helper isn't present, so the Whisper path stays the default everywhere else.
+   *
+   * Note this never awaits readiness: `native` is flipped on only by the helper's
+   * own "ready" event (see onNativeEvent). Spawning succeeding tells us nothing —
+   * macOS aborts the helper the instant it touches the Speech framework without
+   * permission, which lands *before* start() resolves. Gating on "ready" means a
+   * helper that dies on launch simply never takes over, and Whisper keeps going.
+   */
+  private async startNative(): Promise<void> {
+    const speech = (window as any).daisy?.speech;
+    if (!speech) return;
+
+    const session = ++this.nativeSession;
+    try {
+      const { supported } = await speech.isAvailable();
+      if (!supported || session !== this.nativeSession) return;
+
+      this.nativeUnsubscribe = speech.onEvent((payload: any) => {
+        // Ignore stragglers from a helper belonging to an earlier start().
+        if (session === this.nativeSession) this.onNativeEvent(payload);
+      });
+      const result = await speech.start();
+      if (!result?.ok) this.stopNative();
+    } catch {
+      this.stopNative();
+    }
+  }
+
+  private onNativeEvent(payload: any) {
+    if (!payload || typeof payload !== "object") return;
+
+    switch (payload.type) {
+      case "ready":
+        // The helper cleared permission and is streaming: only now is it safe to
+        // stop feeding the Whisper path.
+        if (this.running) {
+          this.native = true;
+          this.nativePaused = false;
+          this.resetBuffers();
+          if (this.isRecording) this.abortRecording();
+          this.stopSpeechRecognition();
+        }
+        break;
+
+      case "partial":
+        if (!this.native) break;
+        this.partialInterimText = String(payload.text ?? "");
+        this.publishPartialTranscript();
+        break;
+
+      case "final": {
+        if (!this.native) break;
+        const text = String(payload.text ?? "").trim();
+        this.resetPartialTranscript();
+        if (text) this.handlers?.onTranscript(text);
+        break;
+      }
+
+      case "error":
+      case "exit": {
+        // Permission refused, helper crashed, or the recognizer became
+        // unavailable. Whisper is still running on the backend, so fall back to
+        // it. Deliberately *not* routed through onError: the caller treats that
+        // as "voice is broken" and switches listening off, but this is a routine
+        // downgrade and the mic must keep working.
+        const wasNative = this.native;
+        this.native = false;
+        this.nativePaused = false;
+        this.nativeUnsubscribe?.();
+        this.nativeUnsubscribe = null;
+        console.info(
+          `Daisy: native speech unavailable (${payload.code ?? payload.type}); using Whisper`
+        );
+        if (this.running) {
+          if (wasNative) this.resetBuffers();
+          this.startSpeechRecognition();
+        }
+        break;
+      }
+    }
+  }
+
+  private stopNative() {
+    this.nativeSession++;
+    this.nativeUnsubscribe?.();
+    this.nativeUnsubscribe = null;
+    this.native = false;
+    this.nativePaused = false;
+    try {
+      (window as any).daisy?.speech?.stop();
+    } catch {
+      /* main process already gone */
+    }
   }
 
   stop(): void {
@@ -192,6 +310,7 @@ class DaisyListener {
     }
     this.sink?.disconnect();
     this.sink = null;
+    this.stopNative();
     this.stopSpeechRecognition();
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
@@ -234,6 +353,15 @@ class DaisyListener {
     this.handlers?.onPartialTranscript?.(text);
   }
 
+  /**
+   * Live "draft" text while you speak, via the browser's SpeechRecognition.
+   *
+   * Progressive enhancement only — the real transcript always comes from the
+   * local Whisper backend. This API is not on-device: Chromium streams audio to
+   * Google's servers using API keys that only official Chrome builds carry, so
+   * in Electron it always fails with error "network" (verified) and the draft
+   * line simply stays empty. It does work in a normal Chrome browser build.
+   */
   private startSpeechRecognition() {
     if (typeof window === "undefined") return;
     const SpeechRecognitionCtor = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -328,6 +456,25 @@ class DaisyListener {
     const level = DaisyListener.frameRms(frame);
     this.lastLevel = level;
     const now = performance.now();
+
+    if (this.native) {
+      // Apple's helper owns the mic for recognition; this graph is kept only to
+      // feed the visualizer. All we do here is gate the helper so Daisy never
+      // transcribes her own speech.
+      const blocked = !!this.handlers?.isBlocked?.();
+      if (blocked !== this.nativePaused) {
+        this.nativePaused = blocked;
+        const speech = (window as any).daisy?.speech;
+        if (blocked) {
+          speech?.pause();
+          this.resetPartialTranscript();
+        } else {
+          speech?.resume();
+        }
+        this.setState(blocked ? "idle" : "listening");
+      }
+      return;
+    }
 
     if (this.handlers?.isBlocked?.()) {
       // Daisy is talking — drop everything, including pre-roll, so none of her

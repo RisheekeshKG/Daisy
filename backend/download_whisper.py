@@ -22,7 +22,7 @@ except ImportError:
     SSL_CONTEXT = None
 
 MODEL_DIR = Path(__file__).resolve().parent / "whisper-model"
-SIZE = os.environ.get("DAISY_WHISPER_SIZE", "small.en")
+SIZE = os.environ.get("DAISY_WHISPER_SIZE", "medium.en")
 BASE_URL = f"https://huggingface.co/Systran/faster-whisper-{SIZE}/resolve/main"
 FILES = ["model.bin", "config.json", "tokenizer.json", "vocabulary.txt"]
 # Records which size currently sits in MODEL_DIR, so switching sizes re-downloads

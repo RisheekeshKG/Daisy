@@ -116,8 +116,8 @@ export default function WorkspaceNotion({
   const handleAISummarize = async () => {
     if (!selectedNote) return;
     try {
-      // Direct Jarvis core API fetch for summary
-      const response = await fetch("/api/jarvis", {
+      // Direct Daisy core API fetch for summary
+      const response = await fetch("/api/daisy", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -127,7 +127,7 @@ export default function WorkspaceNotion({
       });
       if (response.ok) {
         const data = await response.json();
-        const summary = `\n\n---\n**🤖 JARVIS Neural Summary:**\n${data.text || "Summary compilation failed."}`;
+        const summary = `\n\n---\n**🤖 Daisy Summary:**\n${data.text || "Summary compilation failed."}`;
         handleTextChange(selectedNote.content + summary);
       }
     } catch (err) {
