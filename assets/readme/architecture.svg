@@ -1,0 +1,132 @@
+<svg width="1300" height="620" viewBox="0 0 1300 620" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="abg" x1="0" y1="0" x2="1300" y2="620" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFDF7" />
+      <stop offset="100%" stop-color="#FBF7EF" />
+    </linearGradient>
+    <linearGradient id="cardElectron" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#F3EFE6" />
+    </linearGradient>
+    <linearGradient id="cardBackend" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FEF3C7" />
+      <stop offset="100%" stop-color="#FDE68A" />
+    </linearGradient>
+    <linearGradient id="cardExternal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#FCE7F3" />
+      <stop offset="100%" stop-color="#FBCFE8" />
+    </linearGradient>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#78350F" flood-opacity="0.12" />
+    </filter>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#B45309" />
+    </marker>
+  </defs>
+
+  <rect width="1300" height="620" fill="url(#abg)" />
+  <text x="40" y="48" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="26" font-weight="800" fill="#292524">How Daisy is put together</text>
+
+  <!-- Electron shell -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="90" width="330" height="480" rx="24" fill="url(#cardElectron)" stroke="#E7E2D6" stroke-width="2" />
+  </g>
+  <text x="70" y="130" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="20" font-weight="800" fill="#44403C">🖥️ Electron shell</text>
+  <text x="70" y="154" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="13" fill="#78716C">electron/main.cjs</text>
+
+  <g font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" fill="#57534E">
+    <rect x="66" y="176" width="278" height="72" rx="14" fill="#FFFFFF" stroke="#E7E2D6" />
+    <text x="82" y="200" font-weight="700" fill="#292524">React + Vite UI</text>
+    <text x="82" y="220" fill="#78716C">src/ — Daisy chat, calendar,</text>
+    <text x="82" y="238" fill="#78716C">notes, Spotify, Gmail panels</text>
+
+    <rect x="66" y="264" width="278" height="72" rx="14" fill="#FFFFFF" stroke="#E7E2D6" />
+    <text x="82" y="288" font-weight="700" fill="#292524">Always-listening voice loop</text>
+    <text x="82" y="308" fill="#78716C">src/lib/listen.ts — VAD capture,</text>
+    <text x="82" y="326" fill="#78716C">addressee scoring, /api/stt</text>
+
+    <rect x="66" y="352" width="278" height="72" rx="14" fill="#FFFFFF" stroke="#E7E2D6" />
+    <text x="82" y="376" font-weight="700" fill="#292524">Spawns + supervises backend</text>
+    <text x="82" y="396" fill="#78716C">Launches FastAPI on boot, waits</text>
+    <text x="82" y="414" fill="#78716C">for /healthz before loading UI</text>
+
+    <rect x="66" y="440" width="278" height="72" rx="14" fill="#FFFFFF" stroke="#E7E2D6" />
+    <text x="82" y="464" font-weight="700" fill="#292524">daisyVoice (TTS playback)</text>
+    <text x="82" y="484" fill="#78716C">src/lib/voice.ts — plays audio</text>
+    <text x="82" y="502" fill="#78716C">from /api/tts, browser fallback</text>
+  </g>
+
+  <!-- arrow electron -> backend -->
+  <path d="M 372 330 L 424 330" stroke="#B45309" stroke-width="3" marker-end="url(#arrow)" fill="none" />
+  <text x="374" y="318" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="700" fill="#B45309">HTTP /api</text>
+
+  <!-- FastAPI backend -->
+  <g filter="url(#shadow)">
+    <rect x="430" y="90" width="360" height="480" rx="24" fill="url(#cardBackend)" stroke="#F3D07A" stroke-width="2" />
+  </g>
+  <text x="460" y="130" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="20" font-weight="800" fill="#78350F">🐍 FastAPI backend</text>
+  <text x="460" y="154" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="13" fill="#92400E">backend/main.py — local-first, Python</text>
+
+  <g font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="13.5" fill="#78350F">
+    <rect x="456" y="176" width="308" height="40" rx="10" fill="#FFFFFF" fill-opacity="0.7" />
+    <text x="470" y="201" font-weight="700">POST /api/daisy</text>
+    <text x="700" y="201" font-family="-apple-system,sans-serif" font-size="12" fill="#92400E">Gemini agent</text>
+
+    <rect x="456" y="222" width="308" height="40" rx="10" fill="#FFFFFF" fill-opacity="0.7" />
+    <text x="470" y="247" font-weight="700">POST /api/tts</text>
+    <text x="700" y="247" font-family="-apple-system,sans-serif" font-size="12" fill="#92400E">Piper / say</text>
+
+    <rect x="456" y="268" width="308" height="40" rx="10" fill="#FFFFFF" fill-opacity="0.7" />
+    <text x="470" y="293" font-weight="700">POST /api/stt</text>
+    <text x="700" y="293" font-family="-apple-system,sans-serif" font-size="12" fill="#92400E">faster-whisper</text>
+
+    <rect x="456" y="314" width="308" height="40" rx="10" fill="#FFFFFF" fill-opacity="0.7" />
+    <text x="470" y="339" font-weight="700">/api/gcal/*</text>
+    <text x="700" y="339" font-family="-apple-system,sans-serif" font-size="12" fill="#92400E">Calendar</text>
+
+    <rect x="456" y="360" width="308" height="40" rx="10" fill="#FFFFFF" fill-opacity="0.7" />
+    <text x="470" y="385" font-weight="700">/api/gmail/*</text>
+    <text x="700" y="385" font-family="-apple-system,sans-serif" font-size="12" fill="#92400E">Inbox</text>
+
+    <rect x="456" y="406" width="308" height="40" rx="10" fill="#FFFFFF" fill-opacity="0.7" />
+    <text x="470" y="431" font-weight="700">/api/spotify/*</text>
+    <text x="700" y="431" font-family="-apple-system,sans-serif" font-size="12" fill="#92400E">Playback</text>
+
+    <rect x="456" y="452" width="308" height="40" rx="10" fill="#FFFFFF" fill-opacity="0.7" />
+    <text x="470" y="477" font-weight="700">GET /healthz</text>
+    <text x="700" y="477" font-family="-apple-system,sans-serif" font-size="12" fill="#92400E">Liveness</text>
+  </g>
+
+  <!-- arrow backend -> external -->
+  <path d="M 792 330 L 844 330" stroke="#BE185D" stroke-width="3" marker-end="url(#arrow)" fill="none" />
+  <text x="796" y="318" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="12" font-weight="700" fill="#BE185D">only when needed</text>
+
+  <!-- External services -->
+  <g filter="url(#shadow)">
+    <rect x="850" y="90" width="410" height="480" rx="24" fill="url(#cardExternal)" stroke="#F5B8D6" stroke-width="2" />
+  </g>
+  <text x="880" y="130" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="20" font-weight="800" fill="#9D174D">☁️ External services</text>
+  <text x="880" y="154" font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="13" fill="#BE185D">used only for the features that need them</text>
+
+  <g font-family="-apple-system,'Segoe UI',Helvetica,Arial,sans-serif" font-size="14" fill="#831843">
+    <rect x="876" y="176" width="358" height="60" rx="14" fill="#FFFFFF" fill-opacity="0.75" />
+    <text x="892" y="200" font-weight="700">✨ Google Gemini API</text>
+    <text x="892" y="220" fill="#9D174D">Chat replies — falls back to a local rule-based mode</text>
+
+    <rect x="876" y="248" width="358" height="60" rx="14" fill="#FFFFFF" fill-opacity="0.75" />
+    <text x="892" y="272" font-weight="700">📅 Google Calendar API</text>
+    <text x="892" y="292" fill="#9D174D">Events, quick-add, free/busy (OAuth)</text>
+
+    <rect x="876" y="320" width="358" height="60" rx="14" fill="#FFFFFF" fill-opacity="0.75" />
+    <text x="892" y="344" font-weight="700">📬 Gmail API</text>
+    <text x="892" y="364" fill="#9D174D">Read, send, and label mail (OAuth)</text>
+
+    <rect x="876" y="392" width="358" height="60" rx="14" fill="#FFFFFF" fill-opacity="0.75" />
+    <text x="892" y="416" font-weight="700">🎵 Spotify Web API</text>
+    <text x="892" y="436" fill="#9D174D">Remote-control playback on any open device</text>
+
+    <rect x="876" y="464" width="358" height="60" rx="14" fill="#FFFFFF" fill-opacity="0.75" />
+    <text x="892" y="488" font-weight="700">🔒 Everything else stays local</text>
+    <text x="892" y="508" fill="#9D174D">Speech-to-text and text-to-speech never leave the Mac</text>
+  </g>
+</svg>

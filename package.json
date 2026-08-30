@@ -7,42 +7,45 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "clean": "rm -rf dist",
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\"",
     "lint": "tsc --noEmit",
-    "backend:setup": "python3 -m venv backend/.venv && backend/.venv/bin/python -m pip install --upgrade pip && backend/.venv/bin/pip install -r backend/requirements.txt && backend/.venv/bin/python backend/download_voice.py && backend/.venv/bin/python backend/download_whisper.py",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "backend:setup": "node scripts/setup-backend.mjs",
     "backend:build": "node scripts/build-backend.mjs",
-    "backend:dev": "backend/.venv/bin/python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload",
-    "start": "npm run build && cross-env DAISY_SERVE_STATIC=1 backend/.venv/bin/python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000",
-    "electron:dev": "npm run speech:build && concurrently -k -n VITE,ELECTRON \"cross-env DISABLE_HMR=false npm run dev\" \"wait-on http://localhost:3000 && cross-env ELECTRON_START_URL=http://localhost:3000 electron .\"",
-    "speech:build": "node scripts/build-speech.cjs",
-    "electron:build": "npm run build && npm run speech:build && npm run backend:build && electron-builder",
-    "electron:pack": "npm run build && npm run speech:build && npm run backend:build && electron-builder --dir",
-    "icon": "electron scripts/render-icon.cjs build/icon.svg build/icon.png 1024"
+    "backend:dev": "node scripts/py.mjs -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload",
+    "backend:test": "node scripts/py.mjs -m pytest backend/tests -q",
+    "start": "npm run build && cross-env DAISY_SERVE_STATIC=1 node scripts/py.mjs -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000",
+    "electron:dev": "concurrently -k -n VITE,ELECTRON \"cross-env DISABLE_HMR=false npm run dev\" \"wait-on http://localhost:3000 && cross-env ELECTRON_START_URL=http://localhost:3000 electron .\"",
+    "electron:build": "npm run build && npm run backend:build && electron-builder",
+    "electron:pack": "npm run build && npm run backend:build && electron-builder --dir",
+    "icon": "electron scripts/render-icon.cjs assets/icon/icon.svg assets/icon/icon.png 1024"
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.1.14",
-    "@vitejs/plugin-react": "^5.0.4",
-    "firebase": "^12.16.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.1",
-    "react-dom": "^19.0.1",
-    "vite": "^6.2.3"
+    "react-dom": "^19.0.1"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.1.14",
     "@types/node": "^22.14.0",
-    "autoprefixer": "^10.4.21",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.4",
+    "@vitejs/plugin-react": "^5.0.4",
     "concurrently": "^9.1.0",
     "cross-env": "^7.0.3",
     "electron": "^33.2.1",
     "electron-builder": "^25.1.8",
+    "jsdom": "^29.1.1",
     "tailwindcss": "^4.1.14",
     "typescript": "~5.8.2",
     "vite": "^6.2.3",
+    "vitest": "^4.1.10",
     "wait-on": "^8.0.1"
   },
   "build": {
-    "appId": "com.rishi.daisy",
+    "appId": "com.daisy.app",
     "productName": "Daisy",
     "directories": {
       "output": "release"
@@ -51,17 +54,9 @@
       "electron/**/*",
       "package.json",
       "!node_modules/**/*",
-      "build/icon.png",
-      "build/DaisySpeech"
-    ],
-    "asarUnpack": [
-      "build/DaisySpeech"
+      "assets/icon/icon.png"
     ],
     "extraResources": [
-      {
-        "from": ".env",
-        "to": "backend/.env"
-      },
       {
         "from": "backend/dist/daisy-backend",
         "to": "backend"
@@ -69,30 +64,34 @@
       {
         "from": "dist",
         "to": "dist"
-      },
-      {
-        "from": "firebase-applet-config.json",
-        "to": "firebase-applet-config.json"
       }
     ],
     "mac": {
       "category": "public.app-category.productivity",
       "target": "dmg",
       "extendInfo": {
-        "NSMicrophoneUsageDescription": "Daisy listens for your voice so you can talk to your assistant.",
-        "NSSpeechRecognitionUsageDescription": "Daisy uses on-device speech recognition to understand your voice commands."
+        "NSMicrophoneUsageDescription": "Daisy listens for your voice so you can talk to your assistant."
       },
-      "icon": "build/icon.icns"
+      "icon": "assets/icon/icon.icns"
     },
     "win": {
       "target": "nsis",
-      "icon": "build/icon.ico"
+      "icon": "assets/icon/icon.ico"
     },
     "linux": {
       "target": "AppImage",
-      "icon": "build/icon.png"
+      "icon": "assets/icon/icon.png"
     },
-    "icon": "build/icon.icns"
+    "icon": "assets/icon/icon.icns",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "RisheekeshKG",
+        "repo": "Daisy"
+      }
+    ]
   },
-  "productName": "Daisy"
+  "productName": "Daisy",
+  "license": "MIT",
+  "author": "Risheekesh K G"
 }

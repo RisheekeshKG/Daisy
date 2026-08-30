@@ -34,10 +34,16 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 API_BASE = "https://www.googleapis.com/calendar/v3"
 
-# Read and write events on the user's calendars, plus their email for display.
+# A single Google connection powers both Calendar and Gmail in Daisy, so the
+# one token carries every scope the app can use. Google shows all of these on
+# the consent screen at once; adding Gmail here is why connecting Calendar now
+# also lights up the inbox. Changing this list requires reconnecting Google.
 SCOPES = " ".join([
     "https://www.googleapis.com/auth/calendar.events",
     "https://www.googleapis.com/auth/calendar.readonly",
+    "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.modify",
     "openid",
     "email",
 ])
@@ -101,7 +107,17 @@ def _save_token(doc: dict[str, Any]) -> None:
     _token = doc
     try:
         TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        TOKEN_FILE.write_text(json.dumps(doc))
+        # Create the file already private rather than writing it world-readable
+        # and chmod-ing after: on a shared machine that ordering leaves the
+        # OAuth token readable by other users for the width of the write.
+        fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w") as fh:
+                json.dump(doc, fh)
+        except BaseException:
+            os.close(fd)
+            raise
+        # An existing file keeps its old mode through O_CREAT, so re-assert it.
         try:
             os.chmod(TOKEN_FILE, 0o600)
         except OSError:
@@ -183,6 +199,19 @@ async def _access_token() -> Optional[str]:
         if not token:
             return None
     return token.get("access_token") or None
+
+
+async def access_token() -> Optional[str]:
+    """Public accessor so other Google features (Gmail) share this one token."""
+    return await _access_token()
+
+
+def granted_scopes() -> str:
+    """The scope string Google returned for the saved token (may lag SCOPES
+    until the user reconnects). Lets Gmail tell "not connected" apart from
+    "connected but Gmail access not yet granted"."""
+    token = _load_token() or {}
+    return token.get("scope", "")
 
 
 # --- API helper ------------------------------------------------------------

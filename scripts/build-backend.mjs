@@ -1,15 +1,11 @@
 import { spawnSync } from "child_process";
 import fs from "fs";
-import { fileURLToPath } from "url";
 import path from "path";
+import { BACKEND_DIR as backendDir, ROOT as rootDir, venvExists, venvPython } from "./venv.mjs";
 
-const rootDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const backendDir = path.join(rootDir, "backend");
-const python = process.platform === "win32"
-  ? path.join(backendDir, ".venv", "Scripts", "python.exe")
-  : path.join(backendDir, ".venv", "bin", "python");
+const python = venvPython();
 
-if (!fs.existsSync(python)) {
+if (!venvExists()) {
   console.error(`Python venv not found at ${python}. Run npm run backend:setup first.`);
   process.exit(1);
 }
@@ -19,7 +15,7 @@ const voicesData = `${path.join(backendDir, "voices")}${path.delimiter}voices`;
 const whisperModelDir = path.join(backendDir, "whisper-model");
 if (!fs.existsSync(path.join(whisperModelDir, "model.bin"))) {
   console.error(
-    `Whisper model not found at ${whisperModelDir}. Run "npm run backend:setup" (or backend/.venv/bin/python backend/download_whisper.py) first.`
+    `Whisper model not found at ${whisperModelDir}. Run "npm run backend:setup" first.`
   );
   process.exit(1);
 }

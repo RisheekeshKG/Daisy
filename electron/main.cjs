@@ -70,11 +70,11 @@ function waitForServer(url, timeoutMs = 120000) {
 
 /** Absolute path to the app icon PNG, or "" when it hasn't been generated.
  *
- * build/icon.png is listed in package.json "files", so it sits under the app
- * path in both dev (project root) and packaged builds (inside app.asar).
+ * assets/icon/icon.png is listed in package.json "files", so it sits under the
+ * app path in both dev (project root) and packaged builds (inside app.asar).
  */
 function appIconPath() {
-  const candidate = path.join(app.getAppPath(), "build", "icon.png");
+  const candidate = path.join(app.getAppPath(), "assets", "icon", "icon.png");
   return fs.existsSync(candidate) ? candidate : "";
 }
 
@@ -240,128 +240,6 @@ function stopBackend({ immediate = false } = {}) {
   }
 }
 
-// --- Native speech helper (macOS) ------------------------------------------
-//
-// Electron cannot use the browser's SpeechRecognition API: Chromium routes it
-// to a Google endpoint keyed to official Chrome builds, so it always fails with
-// a `network` error. On macOS we instead drive Apple's on-device recognizer —
-// the engine behind system dictation — through a small Swift helper that
-// streams JSON lines. Everything stays on the machine. Elsewhere (and if this
-// fails for any reason) the renderer falls back to the Whisper backend.
-
-let speechProcess = null;
-let speechStdoutBuffer = "";
-
-/** Path to the compiled Swift helper, or "" when it was never built. */
-function speechHelperPath() {
-  const appPath = app.getAppPath();
-  const candidates = [
-    path.join(appPath, "build", "DaisySpeech"),
-    // Packaged builds keep the helper outside the asar (asarUnpack): a binary
-    // inside an archive has no real filesystem path and cannot be executed.
-    path.join(`${appPath}.unpacked`, "build", "DaisySpeech"),
-  ];
-  return candidates.find((p) => fs.existsSync(p)) ?? "";
-}
-
-function sendToRenderer(channel, payload) {
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send(channel, payload);
-  }
-}
-
-function startSpeech() {
-  if (process.platform !== "darwin") return { ok: false, reason: "unsupported-platform" };
-  if (speechProcess) return { ok: true };
-
-  const bin = speechHelperPath();
-  if (!bin) return { ok: false, reason: "helper-missing" };
-
-  let child;
-  try {
-    child = spawn(bin, [], { stdio: ["pipe", "pipe", "pipe"] });
-  } catch (err) {
-    return { ok: false, reason: `spawn-failed: ${err.message}` };
-  }
-
-  speechProcess = child;
-  speechStdoutBuffer = "";
-
-  child.stdout.setEncoding("utf8");
-  child.stdout.on("data", (chunk) => {
-    speechStdoutBuffer += chunk;
-    // The helper writes one JSON object per line; a chunk may split a line.
-    const lines = speechStdoutBuffer.split("\n");
-    speechStdoutBuffer = lines.pop() ?? "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed) continue;
-      try {
-        sendToRenderer("speech:event", JSON.parse(trimmed));
-      } catch {
-        // Ignore anything that is not well-formed JSON.
-      }
-    }
-  });
-
-  child.stderr.on("data", (d) => console.error(`[speech] ${d}`.trimEnd()));
-
-  child.on("exit", (code, signal) => {
-    if (speechProcess === child) speechProcess = null;
-    // A TCC denial aborts the helper outright, so an unexpected exit is the
-    // renderer's cue to fall back rather than sit in silence.
-    sendToRenderer("speech:event", {
-      type: "exit",
-      code,
-      signal,
-    });
-  });
-
-  return { ok: true };
-}
-
-function stopSpeech() {
-  const child = speechProcess;
-  speechProcess = null;
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  try {
-    child.stdin.write('{"cmd":"quit"}\n');
-  } catch {
-    // stdin already gone; fall through to the signal below.
-  }
-  const escalate = setTimeout(() => {
-    try {
-      child.kill("SIGKILL");
-    } catch {
-      /* already gone */
-    }
-  }, 500);
-  escalate.unref?.();
-  child.once("exit", () => clearTimeout(escalate));
-}
-
-function speechCommand(cmd) {
-  if (!speechProcess) return false;
-  try {
-    speechProcess.stdin.write(`${JSON.stringify({ cmd })}\n`);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-ipcMain.handle("speech:start", () => startSpeech());
-ipcMain.handle("speech:stop", () => {
-  stopSpeech();
-  return { ok: true };
-});
-ipcMain.handle("speech:available", () => ({
-  supported: process.platform === "darwin" && !!speechHelperPath(),
-}));
-// Muted while Daisy talks so she never transcribes her own voice.
-ipcMain.on("speech:pause", () => speechCommand("pause"));
-ipcMain.on("speech:resume", () => speechCommand("resume"));
-
 let shuttingDown = false;
 
 /**
@@ -372,7 +250,6 @@ let shuttingDown = false;
 function shutdown() {
   if (shuttingDown) return;
   shuttingDown = true;
-  stopSpeech();
   stopBackend();
   const bail = setTimeout(() => app.exit(0), 1500);
   bail.unref?.();
@@ -384,11 +261,6 @@ for (const signal of ["SIGINT", "SIGTERM", "SIGHUP"]) {
 // Last resort: synchronous, so only an immediate kill is possible here.
 process.on("exit", () => {
   stopBackend({ immediate: true });
-  try {
-    speechProcess?.kill("SIGKILL");
-  } catch {
-    /* already gone */
-  }
 });
 
 async function createWindow() {
@@ -421,6 +293,43 @@ async function createWindow() {
       sandbox: true,
     },
   });
+
+  // Keep the window pinned to the app itself. Without these, anything that
+  // can get a link click or a window.open past the renderer (an injected
+  // string, a compromised dependency) could replace the app with an attacker
+  // page — which would then inherit the preload bridge *and* count as a
+  // local-origin caller of the API. Real outbound links go to the OS browser.
+  const isAppUrl = (url) => {
+    try {
+      const { protocol, hostname } = new URL(url);
+      if (protocol === "file:") return true;
+      return (
+        (protocol === "http:" || protocol === "https:") &&
+        (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1")
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (!isAppUrl(url)) event.preventDefault();
+  });
+
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    // Never open a second Electron window; hand http(s) to the real browser.
+    try {
+      const { protocol } = new URL(url);
+      if (protocol === "http:" || protocol === "https:") shell.openExternal(url);
+    } catch {
+      /* ignore malformed urls */
+    }
+    return { action: "deny" };
+  });
+
+  // Attaching webviews is never intentional here, and they bypass the
+  // webPreferences hardening set above.
+  mainWindow.webContents.on("will-attach-webview", (event) => event.preventDefault());
 
   mainWindow.on("maximize", () => {
     mainWindow.webContents.send("window:maximized-change", true);
@@ -528,6 +437,39 @@ app.whenReady().then(() => {
     const icon = appIconPath();
     if (icon) app.dock?.setIcon(icon);
   }
+
+  // Content-Security-Policy. The renderer is a local app, so everything it
+  // needs is same-origin except Spotify's album art (remote https images) and
+  // the TTS audio it plays back from a blob: URL.
+  //
+  // Vite's dev server needs 'unsafe-eval' and a websocket for HMR; a packaged
+  // build gets the strict policy, so shipped code can never eval a string or
+  // reach a host the app has no business talking to.
+  const csp = [
+    "default-src 'self'",
+    IS_DEV
+      ? "script-src 'self' 'unsafe-inline' 'unsafe-eval'"
+      : "script-src 'self'",
+    // Tailwind and the animation library both set element styles inline.
+    "style-src 'self' 'unsafe-inline'",
+    "img-src 'self' data: blob: https:",
+    "media-src 'self' data: blob:",
+    "font-src 'self' data:",
+    IS_DEV ? "connect-src 'self' ws: http://127.0.0.1:* http://localhost:*" : "connect-src 'self'",
+    "object-src 'none'",
+    "frame-ancestors 'none'",
+    "base-uri 'self'",
+    "form-action 'none'",
+  ].join("; ");
+
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        "Content-Security-Policy": [csp],
+      },
+    });
+  });
 
   // Allow microphone access for Daisy's always-listening voice mode.
   const ses = session.defaultSession;

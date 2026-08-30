@@ -16,7 +16,9 @@ import {
   ExternalLink, Loader2, Sparkles, X, AlertCircle, Trash2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
+import { SkeletonEventList } from "./Skeleton";
 import { CalendarEvent } from "../types";
+import { Card, CardBadge } from "./Card";
 import {
   gcal, type GCalCalendar, type GCalColorMap, type GCalEvent, type GCalEventInput,
 } from "../lib/gcal";
@@ -395,7 +397,8 @@ export default function CalendarSchedule({
 
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-5 min-h-0">
         {/* Month grid */}
-        <div className="lg:col-span-8 flex flex-col bg-white border border-zinc-200/70 rounded-[28px] p-4 md:p-5 min-h-[460px] lg:h-full lg:min-h-0 shadow-sm">
+        <Card className="lg:col-span-8 flex flex-col p-4 md:p-5 pt-8 min-h-[460px] lg:h-full lg:min-h-0">
+          <CardBadge icon={CalendarIcon} accent="blue" />
           <div className="grid grid-cols-7 text-center font-bold text-[10px] text-zinc-400 uppercase tracking-widest mb-2">
             {WEEKDAYS.map((d) => (
               <span key={d}>{d}</span>
@@ -496,10 +499,11 @@ export default function CalendarSchedule({
               })}
             </div>
           )}
-        </div>
+        </Card>
 
         {/* Day agenda */}
-        <div className="lg:col-span-4 flex flex-col bg-white border border-zinc-200/70 rounded-[28px] p-5 min-h-[380px] lg:h-full lg:min-h-0 shadow-sm">
+        <Card className="lg:col-span-4 flex flex-col p-5 pt-8 min-h-[380px] lg:h-full lg:min-h-0">
+          <CardBadge icon={Clock} accent="blue" />
           <div className="mb-3 flex-shrink-0">
             <h3 className="text-sm font-extrabold text-zinc-800">
               {selectedDate === today ? "Today" : parseDay(selectedDate).toLocaleDateString(undefined, { weekday: "long" })}
@@ -533,6 +537,13 @@ export default function CalendarSchedule({
           )}
 
           <div className="flex-1 overflow-y-auto space-y-2.5 pr-1 min-h-0">
+            {/* Cold start only: connected, first sync still running, and nothing
+                cached from a previous session to show. Once events exist they
+                stay on screen through every later sync — see the "Syncing…"
+                affordance on the toolbar button instead. */}
+            {googleSyncing && events.length === 0 ? (
+              <SkeletonEventList rows={4} />
+            ) : (
             <AnimatePresence mode="popLayout">
               {selectedEvents.length > 0 ? (
                 selectedEvents.map((e) => {
@@ -546,8 +557,8 @@ export default function CalendarSchedule({
                       animate={{ opacity: 1, y: 0 }}
                       exit={{ opacity: 0, y: -6 }}
                       onClick={() => openEvent(e)}
-                      className={`group relative p-3 pl-4 rounded-2xl border bg-white hover:border-zinc-300 hover:shadow-sm transition-all overflow-hidden ${
-                        e.localId ? "border-zinc-200" : "border-zinc-200 cursor-pointer"
+                      className={`group relative p-3.5 pl-4 rounded-[14px] border border-zinc-200/90 bg-white shadow-[0_1px_2px_rgba(16,24,40,0.04)] hover:border-zinc-300 hover:shadow-[0_1px_2px_rgba(16,24,40,0.05),0_8px_20px_-10px_rgba(16,24,40,0.16)] transition-all overflow-hidden ${
+                        e.localId ? "" : "cursor-pointer"
                       } ${e.completed ? "opacity-60" : ""}`}
                     >
                       {/* Calendar colour spine */}
@@ -560,7 +571,7 @@ export default function CalendarSchedule({
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center gap-1.5 flex-wrap">
                             <h4
-                              className={`text-xs font-bold text-zinc-800 leading-snug ${
+                              className={`text-[13px] font-semibold tracking-tight text-zinc-900 leading-snug ${
                                 e.completed ? "line-through" : ""
                               }`}
                             >
@@ -578,8 +589,8 @@ export default function CalendarSchedule({
                             )}
                           </div>
 
-                          <div className="flex items-center gap-1.5 mt-1 text-[10px] font-semibold text-zinc-500">
-                            <Clock className="w-3 h-3 flex-shrink-0" />
+                          <div className="flex items-center gap-1.5 mt-1.5 text-[13px] leading-relaxed text-zinc-500">
+                            <Clock className="w-3.5 h-3.5 flex-shrink-0" />
                             <span>
                               {e.allDay
                                 ? "All day"
@@ -588,8 +599,8 @@ export default function CalendarSchedule({
                           </div>
 
                           {e.location && (
-                            <div className="flex items-center gap-1.5 mt-1 text-[10px] font-medium text-zinc-500 min-w-0">
-                              <MapPin className="w-3 h-3 flex-shrink-0" />
+                            <div className="flex items-center gap-1.5 mt-1 text-[13px] leading-relaxed text-zinc-500 min-w-0">
+                              <MapPin className="w-3.5 h-3.5 flex-shrink-0" />
                               <span className="truncate">{e.location}</span>
                             </div>
                           )}
@@ -706,10 +717,10 @@ export default function CalendarSchedule({
                   <div className="w-12 h-12 rounded-full bg-zinc-50 border border-zinc-200 flex items-center justify-center text-zinc-300 mb-3">
                     {loading ? <Loader2 className="w-5 h-5 animate-spin" /> : <Clock className="w-6 h-6" />}
                   </div>
-                  <h4 className="text-xs font-bold text-zinc-700">
+                  <h4 className="text-[15px] font-semibold tracking-tight text-zinc-900">
                     {loading ? "Loading…" : search ? "No matches" : "Nothing scheduled"}
                   </h4>
-                  <p className="text-[10px] text-zinc-500 max-w-[210px] mt-1 font-medium leading-relaxed">
+                  <p className="text-[13px] text-zinc-500 max-w-[210px] mt-1.5 leading-relaxed">
                     {search
                       ? "Try a different search term."
                       : googleConnected
@@ -719,8 +730,9 @@ export default function CalendarSchedule({
                 </div>
               )}
             </AnimatePresence>
+            )}
           </div>
-        </div>
+        </Card>
       </div>
 
       {error && (

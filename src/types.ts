@@ -1,10 +1,3 @@
-export interface EncryptedItem {
-  id: string;
-  ciphertext: string; // Base64 combined IV + Encrypted Data
-  isEncrypted: boolean;
-  updatedAt: string;
-}
-
 export interface Note {
   id: string;
   title: string;
@@ -48,13 +41,12 @@ export interface GmailMessage {
   id: string;
   threadId: string;
   from: string;
+  to?: string;
   subject: string;
   date: string;
   snippet: string;
   body?: string;
-}
-
-export interface EncryptionKeys {
-  salt: string;
-  pbkdf2Iterations: number;
+  unread?: boolean;
+  starred?: boolean;
+  labelIds?: string[];
 }

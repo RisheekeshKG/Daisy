@@ -2,9 +2,16 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.32.0
 google-genai>=1.0.0
 piper-tts>=1.5.0
+# Speech-to-text. mlx-whisper runs Whisper on the Apple GPU and is ~11x faster
+# than the CPU path at better accuracy, so it is preferred on Apple Silicon;
+# faster-whisper stays as the cross-platform fallback and is always required.
 faster-whisper>=1.1.0
+mlx-whisper>=0.4.0; sys_platform == "darwin" and platform_machine == "arm64"
 python-dotenv>=1.0.0
 pydantic>=2.9.0
 # Used directly by the Spotify integration (also a google-genai dependency).
 httpx>=0.27.0
 pyinstaller>=6.11.0
+
+# --- dev / test only ---------------------------------------------------
+pytest>=8.0.0

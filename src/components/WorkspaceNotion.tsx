@@ -2,6 +2,9 @@ import React, { useState } from "react";
 import { Plus, Trash, FileText, Search, Tag, Eye, EyeOff, ShieldCheck, Sparkles, CornerDownLeft } from "lucide-react";
 import { Note } from "../types";
 import { motion, AnimatePresence } from "motion/react";
+import NotionEditor from "./NotionEditor";
+import { Card, CardBadge, CardAction } from "./Card";
+import { markdownToPlainText } from "../lib/markdown";
 
 interface WorkspaceNotionProps {
   notes: Note[];
@@ -36,9 +39,9 @@ export default function WorkspaceNotion({
 
   const handleCreateNewNote = () => {
     onAddNote({
-      title: "Untitled Note Draft",
-      content: "# Workspace Note\nStart typing secure ideas here...",
-      tags: ["draft"],
+      title: "",
+      content: "",
+      tags: [],
     });
   };
 
@@ -82,34 +85,6 @@ export default function WorkspaceNotion({
       tags: selectedNote.tags.filter((t) => t !== tagToRemove),
       updatedAt: new Date().toISOString(),
     });
-  };
-
-  // Quick rich markdown inserts
-  const insertMarkdown = (syntax: string) => {
-    if (!selectedNote) return;
-    const textarea = document.getElementById("note-editor-textarea") as HTMLTextAreaElement;
-    if (!textarea) return;
-
-    const start = textarea.selectionStart;
-    const end = textarea.selectionEnd;
-    const text = textarea.value;
-    const selection = text.substring(start, end);
-    
-    let replacement = "";
-    if (syntax === "h1") replacement = `# ${selection || "Heading 1"}`;
-    else if (syntax === "h2") replacement = `## ${selection || "Heading 2"}`;
-    else if (syntax === "bold") replacement = `**${selection || "bold text"}**`;
-    else if (syntax === "italic") replacement = `*${selection || "italic text"}*`;
-    else if (syntax === "code") replacement = `\`${selection || "codeBlock"}\``;
-    else if (syntax === "bullet") replacement = `\n- ${selection || "List item"}`;
-
-    const newContent = text.substring(0, start) + replacement + text.substring(end);
-    handleTextChange(newContent);
-    
-    setTimeout(() => {
-      textarea.focus();
-      textarea.setSelectionRange(start + replacement.length, start + replacement.length);
-    }, 50);
   };
 
   // Simulated AI Summary trigger
@@ -177,7 +152,8 @@ export default function WorkspaceNotion({
 
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-0">
         {/* Left Column: Sidebar Note List (lg:col-span-4) */}
-        <div className="lg:col-span-4 flex flex-col bg-white/15 backdrop-blur-xl border border-white/30 rounded-[28px] p-4 min-h-[300px] lg:h-full lg:min-h-0 shadow-inner">
+        <Card className="lg:col-span-4 flex flex-col p-4 pt-8 min-h-[300px] lg:h-full lg:min-h-0">
+          <CardBadge icon={FileText} accent="amber" />
           <div className="flex items-center justify-between text-xs font-bold text-zinc-500 mb-3 px-1 tracking-wider uppercase">
             <span>Documents ({filteredNotes.length})</span>
             {isEncryptionActive && (
@@ -200,14 +176,14 @@ export default function WorkspaceNotion({
                     exit={{ opacity: 0 }}
                     whileHover={{ scale: 1.01 }}
                     onClick={() => onSelectNote(note.id)}
-                    className={`p-3.5 rounded-2xl border transition-all cursor-pointer group flex flex-col justify-between h-24 shadow-sm backdrop-blur-md ${
+                    className={`p-3.5 rounded-[14px] border bg-white transition-all cursor-pointer group flex flex-col justify-between h-[118px] gap-1 shadow-[0_1px_2px_rgba(16,24,40,0.04)] ${
                       isSelected
-                        ? "bg-white/70 border-amber-400 shadow-md ring-2 ring-amber-400/20"
-                        : "bg-white/30 border-white/40 hover:bg-white/50 hover:border-white/60"
+                        ? "border-zinc-900/15 ring-1 ring-zinc-900/10"
+                        : "border-zinc-200/90 hover:border-zinc-300 hover:shadow-[0_1px_2px_rgba(16,24,40,0.05),0_8px_20px_-10px_rgba(16,24,40,0.16)]"
                     }`}
                   >
                     <div className="flex justify-between items-start gap-2 min-w-0">
-                      <h4 className={`text-xs font-bold truncate flex-1 ${isSelected ? "text-amber-600 font-extrabold" : "text-zinc-800"}`}>
+                      <h4 className={`text-[13px] font-semibold tracking-tight truncate flex-1 ${isSelected ? "text-zinc-900" : "text-zinc-800"}`}>
                         {note.title || "Untitled draft"}
                       </h4>
                       <button
@@ -221,11 +197,15 @@ export default function WorkspaceNotion({
                       </button>
                     </div>
 
-                    <p className="text-[11px] text-zinc-500 truncate line-clamp-2 pr-2 leading-relaxed">
-                      {note.content.replace(/[#*`\-]/g, "")}
+                    {/* Was a regex stripping [#*`-], which also ate the hyphen
+                        out of "well-known" and left link syntax behind. Also
+                        dropped `truncate`, which forces nowrap and silently
+                        defeated the line-clamp-2 next to it. */}
+                    <p className="text-[13px] text-zinc-500 line-clamp-2 pr-2 leading-relaxed min-h-0 flex-1">
+                      {markdownToPlainText(note.content)}
                     </p>
 
-                    <div className="flex justify-between items-center text-[9px] font-mono text-zinc-400">
+                    <div className="flex justify-between items-center text-[12px] text-zinc-400">
                       <span>
                         {new Date(note.updatedAt).toLocaleDateString([], {
                           month: "short",
@@ -248,90 +228,47 @@ export default function WorkspaceNotion({
               })}
             </AnimatePresence>
           </div>
-        </div>
+        </Card>
 
         {/* Right Column: Editor Workspace (lg:col-span-8) */}
-        <div className="lg:col-span-8 flex flex-col bg-white/20 backdrop-blur-xl border border-white/40 rounded-[28px] p-5 md:p-6 min-h-[450px] lg:h-full lg:min-h-0 shadow-[0_8px_32px_rgba(251,191,36,0.04)] relative">
+        <Card className="lg:col-span-8 flex flex-col p-5 md:p-6 min-h-[450px] lg:h-full lg:min-h-0">
           {selectedNote ? (
             <div className="flex-1 flex flex-col min-h-0">
-              {/* Editor controls */}
-              <div className="flex flex-wrap items-center justify-between border-b border-zinc-100 pb-3 mb-4 gap-3">
-                {/* Title */}
-                <input
-                  type="text"
-                  value={selectedNote.title}
-                  onChange={(e) => handleTitleChange(e.target.value)}
-                  className="bg-transparent border-none text-base font-extrabold text-zinc-800 focus:outline-none w-full sm:w-60 focus:ring-0"
-                  placeholder="Note Title"
-                />
-
-                {/* Format buttons shelf */}
-                <div className="flex items-center gap-1.5 bg-white/40 backdrop-blur-sm border border-white/40 p-1 rounded-xl text-xs shadow-sm">
-                  <button
-                    onClick={() => insertMarkdown("h1")}
-                    className="p-1 hover:bg-white rounded text-zinc-700 font-bold cursor-pointer w-7 h-7 flex items-center justify-center transition-colors"
-                    title="Header 1"
-                  >
-                    H1
-                  </button>
-                  <button
-                    onClick={() => insertMarkdown("h2")}
-                    className="p-1 hover:bg-white rounded text-zinc-700 font-bold cursor-pointer w-7 h-7 flex items-center justify-center transition-colors"
-                    title="Header 2"
-                  >
-                    H2
-                  </button>
-                  <div className="w-px h-4 bg-zinc-200" />
-                  <button
-                    onClick={() => insertMarkdown("bold")}
-                    className="p-1 hover:bg-white rounded text-zinc-700 font-semibold cursor-pointer w-7 h-7 flex items-center justify-center transition-colors"
-                    title="Bold"
-                  >
-                    B
-                  </button>
-                  <button
-                    onClick={() => insertMarkdown("italic")}
-                    className="p-1 hover:bg-white rounded text-zinc-700 italic cursor-pointer w-7 h-7 flex items-center justify-center transition-colors"
-                    title="Italic"
-                  >
-                    I
-                  </button>
-                  <button
-                    onClick={() => insertMarkdown("code")}
-                    className="p-1 hover:bg-white rounded text-zinc-700 font-mono cursor-pointer w-7 h-7 flex items-center justify-center transition-colors"
-                    title="Code"
-                  >
-                    &lt;/&gt;
-                  </button>
-                  <button
-                    onClick={() => insertMarkdown("bullet")}
-                    className="p-1 hover:bg-white rounded text-zinc-700 cursor-pointer px-1.5 h-7 flex items-center justify-center transition-colors text-[10px]"
-                    title="List"
-                  >
-                    • List
-                  </button>
-                  <div className="w-px h-4 bg-zinc-200" />
-                  <button
-                    onClick={handleAISummarize}
-                    className="p-1 px-3 bg-gradient-to-r from-amber-400 to-amber-500 hover:from-amber-500 hover:to-amber-600 rounded-lg text-white flex items-center gap-1 text-[10px] font-bold shadow-sm hover:scale-105 active:scale-95 transition-all cursor-pointer h-7"
-                    title="AI Summarize"
-                  >
-                    <Sparkles className="w-3 h-3 text-white fill-white" />
-                    <span>DAISY AI</span>
-                  </button>
+              {/* Notion-style page header: emoji, big title, nothing else.
+                  The old H1/B/</>/List shelf is gone because the block editor
+                  makes it redundant — "/" opens the block menu and "# ", "- ",
+                  "[] " convert in place, which is how Notion actually works. */}
+              <div className="flex items-start justify-between gap-3 mb-1 pl-[52px] pr-2">
+                <div className="flex-1 min-w-0">
+                  <input
+                    type="text"
+                    value={selectedNote.title}
+                    onChange={(e) => handleTitleChange(e.target.value)}
+                    aria-label="Page title"
+                    className="w-full bg-transparent border-none text-[32px] leading-[1.2] font-bold text-[#37352F] placeholder:text-[#E3E2E0] focus:outline-none focus:ring-0 p-0"
+                    placeholder="Untitled"
+                  />
                 </div>
+                <button
+                  onClick={handleAISummarize}
+                  title="Summarize this page with Daisy"
+                  aria-label="Summarize this page with Daisy"
+                  className="shrink-0 mt-2 px-2.5 h-7 rounded-md text-[12px] font-medium text-[#37352F] hover:bg-[#37352F]/[0.06] flex items-center gap-1.5 transition-colors cursor-pointer"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-500" />
+                  <span>Ask Daisy</span>
+                </button>
               </div>
 
-              {/* Text Area */}
-              <div className="flex-1 flex flex-col min-h-0 relative">
-                <textarea
-                  id="note-editor-textarea"
-                  value={selectedNote.content}
-                  onChange={(e) => handleTextChange(e.target.value)}
-                  className="w-full flex-1 bg-transparent border-none text-xs text-zinc-700 focus:outline-none resize-none leading-relaxed font-sans scroll-smooth h-full pr-1 focus:ring-0"
-                  placeholder="Draft encrypted ideas here..."
+              {/* Blocks */}
+              <div className="flex-1 min-h-0 overflow-y-auto -mx-1 px-1">
+                <NotionEditor
+                  key={selectedNote.id}
+                  markdown={selectedNote.content}
+                  onChange={handleTextChange}
                 />
               </div>
+
 
               {/* Footer and Tag Management */}
               <div className="mt-4 pt-3 border-t border-zinc-100 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
@@ -377,19 +314,16 @@ export default function WorkspaceNotion({
                   </div>
                 </div>
               </div>
-              <h3 className="text-sm font-bold text-zinc-800">Select or Create a Document</h3>
-              <p className="text-xs text-zinc-500 max-w-xs mt-1 leading-relaxed font-medium">
-                Your workspace documents are secure and offline-first. Use the AI Summarize feature to compile insights immediately.
+              <h3 className="text-[15px] font-semibold tracking-tight text-zinc-900">Select or create a document</h3>
+              <p className="text-[13px] text-zinc-500 max-w-xs mt-1.5 leading-relaxed">
+                Your workspace documents are offline-first. Ask Daisy to summarize one to compile insights immediately.
               </p>
-              <button
-                onClick={handleCreateNewNote}
-                className="mt-5 px-5 py-2.5 bg-gradient-to-r from-amber-400 to-orange-400 text-white text-xs font-bold rounded-full hover:from-amber-500 hover:to-orange-500 cursor-pointer shadow-md hover:scale-102 transition-all"
-              >
-                Create Document Draft
-              </button>
+              <CardAction className="mt-5" onClick={handleCreateNewNote}>
+                Create a document
+              </CardAction>
             </div>
           )}
-        </div>
+        </Card>
       </div>
     </div>
   );

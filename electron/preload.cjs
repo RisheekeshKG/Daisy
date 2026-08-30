@@ -22,20 +22,4 @@ contextBridge.exposeInMainWorld("daisy", {
   },
   // Opens http(s) links in the user's default browser.
   openExternal: (url) => ipcRenderer.invoke("shell:open-external", url),
-
-  // Apple's on-device speech recognizer, driven by a helper process in main.
-  // This is Daisy's stand-in for the browser SpeechRecognition API, which
-  // Chromium disables outside official Chrome builds.
-  speech: {
-    isAvailable: () => ipcRenderer.invoke("speech:available"),
-    start: () => ipcRenderer.invoke("speech:start"),
-    stop: () => ipcRenderer.invoke("speech:stop"),
-    pause: () => ipcRenderer.send("speech:pause"),
-    resume: () => ipcRenderer.send("speech:resume"),
-    onEvent: (callback) => {
-      const listener = (_event, payload) => callback(payload);
-      ipcRenderer.on("speech:event", listener);
-      return () => ipcRenderer.removeListener("speech:event", listener);
-    },
-  },
 });

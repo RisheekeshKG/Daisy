@@ -117,8 +117,18 @@ def _save_token(doc: dict[str, Any]) -> None:
     _token = doc
     try:
         TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
-        TOKEN_FILE.write_text(json.dumps(doc))
-        # Tokens are account credentials — keep them owner-only.
+        # Tokens are account credentials — keep them owner-only. Create the
+        # file already private rather than writing it world-readable and
+        # chmod-ing after: on a shared machine that ordering leaves the token
+        # readable by other users for the width of the write.
+        fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        try:
+            with os.fdopen(fd, "w") as fh:
+                json.dump(doc, fh)
+        except BaseException:
+            os.close(fd)
+            raise
+        # An existing file keeps its old mode through O_CREAT, so re-assert it.
         try:
             os.chmod(TOKEN_FILE, 0o600)
         except OSError:
@@ -745,6 +755,36 @@ def _best_playlist_match(query_tokens: list[str], items: list[dict[str, Any]]):
     return best, best_score
 
 
+def _best_track_match(query_tokens: list[str], items: list[dict[str, Any]]):
+    """Highest-scoring track, bounded by a direct-song request heuristic."""
+    best, best_score = None, 0.0
+    for item in items:
+        name = item.get("name") or ""
+        artist_names = " ".join((a or {}).get("name", "") for a in (item.get("artists") or []))
+        s = _match_score(query_tokens, name)
+        artist_score = _match_score(query_tokens, artist_names)
+        combined = max(s, 0.7 * s + 0.3 * artist_score)
+        if combined > best_score or (
+            combined == best_score and best is not None
+            and len(_tokens(name)) < len(_tokens(best.get("name") or ""))
+        ):
+            best, best_score = item, combined
+    return best, best_score
+
+
+def _looks_like_direct_song_query(query: str) -> bool:
+    """A reasonable heuristic for a direct song request rather than a playlist name."""
+    text = (query or "").lower()
+    if not text:
+        return False
+    if re.search(r"\b(song|track|single|by)\b", text):
+        return True
+    # A plain title like "yellow" or "midnight city" is often a direct song.
+    # If the user did not mention playlists and did not say "my ... playlist",
+    # it is safer to search tracks before playlists.
+    return not re.search(r"\bplaylist\b", text) and not re.search(r"\bmy\s+.*\bplaylist\b", text)
+
+
 async def _all_own_playlists() -> list[dict[str, Any]]:
     """Every playlist in the user's library, not just the first page."""
     items: list[dict[str, Any]] = []
@@ -784,10 +824,9 @@ async def cached_playlist_names(limit: int = 80) -> list[str]:
 async def resolve_and_play(query: str, device_id: Optional[str] = None) -> dict[str, Any]:
     """Play whatever best matches a spoken phrase like "my focus playlist".
 
-    Prefers the user's own playlists (that's what "my X playlist" almost always
-    means). If the request explicitly says "my", a public Spotify result is never
-    an acceptable answer — playing a stranger's playlist is worse than saying we
-    could not find it.
+    Direct song requests like "play Yellow" or "play the song Yellow" prefer
+    track matches before playlists, while explicit "my ... playlist" requests
+    stay inside the user's own library.
     """
     wanted = (query or "").strip()
     if not wanted:
@@ -799,6 +838,21 @@ async def resolve_and_play(query: str, device_id: Optional[str] = None) -> dict[
 
     # "my ... playlist" is an explicit instruction to stay inside the library.
     own_only = bool(re.search(r"\bmy\b", wanted, re.I))
+
+    found = await _api(
+        "GET", "/search", params={"q": wanted, "type": "playlist,album,track,artist", "limit": 10}
+    )
+    found = found or {}
+
+    # Direct song requests should prefer a track match instead of a playlist
+    # whose name only happens to contain the same words.
+    if not own_only and _looks_like_direct_song_query(wanted):
+        tracks = [i for i in ((found.get("tracks") or {}).get("items") or []) if i]
+        if tracks:
+            pick, score = _best_track_match(query_tokens, tracks)
+            if pick and score >= 0.55:
+                await _start_playback(uris=[pick.get("uri")], device_id=device_id)
+                return {"kind": "track", "name": pick.get("name"), "uri": pick.get("uri")}
 
     own = await _all_own_playlists()
     best, best_score = _best_playlist_match(query_tokens, own)
@@ -815,11 +869,6 @@ async def resolve_and_play(query: str, device_id: Optional[str] = None) -> dict[
     # Nothing convincing in the user's library — search Spotify itself. Rank the
     # public results by the same similarity measure instead of blindly taking the
     # first hit, which is how unrelated playlists ended up playing.
-    found = await _api(
-        "GET", "/search", params={"q": wanted, "type": "playlist,album,track,artist", "limit": 10}
-    )
-    found = found or {}
-
     for key, kind in (("playlists", "playlist"), ("albums", "album"), ("artists", "artist")):
         items = [i for i in ((found.get(key) or {}).get("items") or []) if i]
         if not items:
@@ -829,8 +878,8 @@ async def resolve_and_play(query: str, device_id: Optional[str] = None) -> dict[
             await _start_playback(context_uri=pick.get("uri"), device_id=device_id)
             return {"kind": kind, "name": pick.get("name"), "uri": pick.get("uri")}
 
-    # A track is the safest fallback: Spotify's track search is a much better
-    # ranker for song titles than name similarity is.
+    # A track is the safest fallback when the query is not obviously a playlist
+    # and Spotify's search still returns a strong match.
     tracks = [i for i in ((found.get("tracks") or {}).get("items") or []) if i]
     if tracks:
         await _start_playback(uris=[tracks[0].get("uri")], device_id=device_id)

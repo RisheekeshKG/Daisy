@@ -1,0 +1,126 @@
+name: Release
+
+# Tagging is the trigger, so cutting a release is `npm version <x.y.z> && git
+# push --follow-tags` and nothing else. workflow_dispatch is here so the build
+# can be exercised without burning a version number on a failure.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write # required to create the release and upload installers
+
+env:
+  # Nothing here is signed. Without this electron-builder finds no identity,
+  # tries anyway, and fails the job instead of emitting an unsigned build.
+  CSC_IDENTITY_AUTO_DISCOVERY: false
+
+jobs:
+  # Gate the build on the suites. A tag that cannot pass tests should never
+  # reach the Releases page.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend dependencies
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/python -m pip install --upgrade pip
+          backend/.venv/bin/pip install -r backend/requirements.txt
+
+      - run: npm run lint
+      - run: npm test
+      - run: npm run backend:test
+
+      # The tag names the release, but electron-builder takes the version from
+      # package.json. If they disagree the release is labelled wrong, so stop.
+      - name: Tag must match package.json version
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$PKG" ]; then
+            echo "::error::tag v$TAG does not match package.json version $PKG"
+            exit 1
+          fi
+
+  build:
+    needs: test
+    strategy:
+      # One platform failing shouldn't deny the others their installer.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14 # Apple silicon, so the mlx-whisper wheel resolves
+            name: macOS
+          - os: ubuntu-latest
+            name: Linux
+          - os: windows-latest
+            name: Windows
+
+    runs-on: ${{ matrix.os }}
+    name: Build ${{ matrix.name }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ~200MB of Piper voice + Whisper weights, fetched from Hugging Face and
+      # pinned by the lockfile hash of the code that fetches them.
+      - name: Cache speech models
+        uses: actions/cache@v4
+        with:
+          path: |
+            backend/voices
+            backend/whisper-model
+          key: models-${{ runner.os }}-${{ hashFiles('backend/download_voice.py', 'backend/download_whisper.py') }}
+
+      - name: Set up the backend (deps + models)
+        shell: bash
+        run: npm run backend:setup
+
+      - name: Build installer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # --publish always uploads into a draft release keyed on the version.
+        # On workflow_dispatch there is no tag, so build without publishing.
+        run: |
+          npm run build
+          npm run backend:build
+          if [ "${{ github.event_name }}" = "push" ]; then
+            npx electron-builder --publish always
+          else
+            npx electron-builder --publish never
+          fi
+
+      # Keeps artifacts reachable for a dispatch run, which publishes nothing.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: daisy-${{ matrix.name }}
+          path: |
+            release/*.dmg
+            release/*.exe
+            release/*.AppImage
+          if-no-files-found: warn
+          retention-days: 14

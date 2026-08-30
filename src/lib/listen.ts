@@ -14,6 +14,9 @@
  *     included in the clip instead of being clipped off the front;
  *   - a VAD driven by the audio callback rather than requestAnimationFrame,
  *     which browsers throttle (or stop entirely) when the window is hidden.
+ *
+ * Whisper (backend `/api/stt`) is the only transcription engine — everything
+ * stays on-device, no OS-specific native helper required.
  */
 
 export type ListenState = "idle" | "listening" | "recording" | "transcribing";
@@ -22,9 +25,33 @@ export interface ListenHandlers {
   onTranscript: (text: string) => void;
   onPartialTranscript?: (text: string) => void;
   onState?: (state: ListenState) => void;
+  /** Voice is broken and capture has stopped (e.g. mic permission refused). */
   onError?: (err: unknown) => void;
+  /** Something went wrong for one utterance, but the mic is still live. */
+  onNotice?: (message: string) => void;
   /** Return true to suspend capture (e.g. while Daisy is talking). */
   isBlocked?: () => boolean;
+}
+
+/** Error surfaced through onError, carrying a machine-readable reason. */
+export class ListenError extends Error {
+  constructor(readonly code: string, message?: string) {
+    super(message || code);
+    this.name = "ListenError";
+  }
+}
+
+/** Human-readable explanation for the mic UI. */
+export function describeListenError(err: unknown): string {
+  const code = err instanceof ListenError ? err.code : "";
+  switch (code) {
+    case "mic":
+      return "Microphone access was refused — allow it in System Settings → Privacy & Security.";
+    case "audio":
+      return "Couldn't open the audio input.";
+    default:
+      return "Voice input stopped unexpectedly.";
+  }
 }
 
 // Whisper works at 16kHz mono; asking the AudioContext for that rate lets the
@@ -36,7 +63,11 @@ const FRAME_SIZE = 1024;
 // Audio kept *before* speech is detected, so word onsets survive. The threshold
 // crossing always happens a little after speech actually starts.
 const PREROLL_MS = 400;
-const SILENCE_MS = 850; // pause that ends an utterance (long enough to survive natural pauses)
+// Pause that ends an utterance. Whisper cannot start decoding until the whole
+// clip is captured, so this has to be long enough to survive a natural
+// mid-sentence pause — cutting it short splits one request into two and the
+// second half arrives with no wake word attached.
+const SILENCE_MS = 850;
 const MIN_UTTERANCE_MS = 300; // ignore blips shorter than this
 const MAX_UTTERANCE_MS = 20000; // hard cap so a stuck VAD can't record forever
 const POST_SPEECH_COOLDOWN_MS = 250; // ignore mic right after Daisy stops talking
@@ -50,8 +81,45 @@ const START_MARGIN = 3.5; // speech must beat the noise floor by this factor
 const KEEP_MARGIN = 2.0;
 const NOISE_ADAPT = 0.05; // EMA weight for noise-floor tracking
 
+// Music playing in the room is a different problem from a noisy room. Speaking
+// over a song only clears it by roughly 5-6dB at the mic, so the quiet-room
+// margin of 3.5x (~11dB) is a bar the user physically cannot reach — it makes
+// Daisy deaf for exactly as long as the song lasts. When we know music is
+// playing we drop to a margin speech can actually beat, and accept that some
+// clips will be music: those get ducked, transcribed, and thrown away by the
+// backend's no-speech filter, which is far cheaper than not hearing at all.
+const MUSIC_START_MARGIN = 1.8;
+const MUSIC_KEEP_MARGIN = 1.25;
+
+// The margin slides between the two profiles based on how loud the room has
+// actually become, rather than waiting to be told. A learned noise floor this
+// low is a quiet room; this high is something loud and steady playing. Doing
+// it from the floor means it works for a song on a laptop, a TV, or a
+// housemate's speaker — not just for audio Daisy happens to control.
+const QUIET_FLOOR = 0.015;
+const LOUD_FLOOR = 0.04;
+
+/**
+ * How long a single unbroken stretch of above-threshold audio has to run
+ * before we stop believing it is speech.
+ *
+ * This is the escape hatch from a deadlock: the noise floor only adapts
+ * between utterances, so when a song starts mid-session it trips the VAD on
+ * its first beat and then never dips again. Recording never ends, the floor
+ * never learns the room got louder, and nothing is ever sent. Detecting that
+ * lets us re-baseline the floor to what we just heard and carry on.
+ */
+const SUSTAINED_BACKGROUND_MS = 5000;
+/**
+ * The longest pause allowed inside that stretch for it to still count as
+ * background. People breathe; songs do not, so a stretch with no gap at all is
+ * the tell. Kept well under SILENCE_MS so a genuinely long request, which
+ * always has small gaps between words, is never mistaken for background.
+ */
+const MAX_BACKGROUND_GAP_MS = 150;
+
 /** Encode mono float samples as a 16-bit PCM WAV blob. */
-function encodeWav(samples: Float32Array, sampleRate: number): Blob {
+export function encodeWav(samples: Float32Array, sampleRate: number): Blob {
   const buffer = new ArrayBuffer(44 + samples.length * 2);
   const view = new DataView(buffer);
   const writeString = (offset: number, s: string) => {
@@ -102,6 +170,17 @@ class DaisyListener {
   private data: Uint8Array | null = null;
 
   private running = false;
+  /**
+   * Bumped by every start() and stop(). start() has to await getUserMedia, and
+   * React StrictMode mounts -> unmounts -> mounts before that first promise
+   * ever resolves, so two start() calls can be in flight at once with
+   * `running` still false in both guards. Whichever resolves second used to
+   * overwrite this.processor/this.stream while the first graph stayed wired
+   * up and kept firing onAudio — two mic streams interleaving frames into one
+   * shared utterance buffer, which is audio Whisper cannot transcribe. The
+   * epoch lets a superseded start() recognise it lost and tear itself down.
+   */
+  private startEpoch = 0;
   private isRecording = false;
   private isTranscribing = false;
 
@@ -116,25 +195,50 @@ class DaisyListener {
   private lastLevel = 0;
   private lastVoiceTime = 0;
   private recordStart = 0;
+  /** True while a song is playing, which relaxes the VAD margins. */
+  private musicPlaying = false;
+  /** Running mean level of the current utterance, for re-baselining. */
+  private utteranceLevelSum = 0;
+  private utteranceLevelCount = 0;
+  /** Longest pause seen inside the current utterance. */
+  private longestGapMs = 0;
   private blockedUntil = 0;
   private partialFinalText = "";
   private partialInterimText = "";
-
-  /** True while Apple's recognizer is driving transcription instead of Whisper. */
-  private native = false;
-  private nativeUnsubscribe: (() => void) | null = null;
-  private nativePaused = false;
-  /** Bumped on every start/stop so late events from an old helper are ignored. */
-  private nativeSession = 0;
 
   isActive(): boolean {
     return this.running;
   }
 
   /** Which engine is producing transcripts right now. */
-  getEngine(): "apple" | "whisper" | "none" {
-    if (!this.running) return "none";
-    return this.native ? "apple" : "whisper";
+  getEngine(): "whisper" | "none" {
+    return this.running ? "whisper" : "none";
+  }
+
+  /**
+   * Tell the listener a song is playing, which relaxes the VAD margins so
+   * speech over music can still trip it. Driven by Spotify's now-playing
+   * state; the sustained-background detector below covers the window before
+   * that poll catches up.
+   */
+  setMusicPlaying(playing: boolean): void {
+    if (this.musicPlaying === playing) return;
+    this.musicPlaying = playing;
+
+    if (playing) {
+      // Whatever the mic is hearing at the moment we learn a song is on *is*
+      // the song, so seed the floor from it. Without this the first beat trips
+      // the VAD, and because a track never pauses the recording it starts can
+      // only end at the sustained-background timeout seconds later — seconds
+      // in which Daisy is deaf. Anything already recording is that same song.
+      this.noiseFloor = Math.max(this.noiseFloor, this.lastLevel);
+      if (this.isRecording) this.abortRecording();
+      return;
+    }
+
+    // Music stopped: the floor is now far too high and would swallow ordinary
+    // speech. Drop it and let the idle EMA find the quiet room again.
+    this.noiseFloor = MIN_START_THRESHOLD;
   }
 
   /** Current normalized mic loudness (0..1) — for visualizers. */
@@ -147,9 +251,13 @@ class DaisyListener {
 
   async start(handlers: ListenHandlers): Promise<void> {
     if (this.running) return;
+    const epoch = ++this.startEpoch;
     this.handlers = handlers;
+    // Held locally, not on `this`, until we know this start() is still the
+    // current one — otherwise a superseded call overwrites the live stream.
+    let stream: MediaStream;
     try {
-      this.stream = await navigator.mediaDevices.getUserMedia({
+      stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           // Echo cancellation stays on — Daisy speaks through the same speakers.
           echoCancellation: true,
@@ -161,9 +269,21 @@ class DaisyListener {
         },
       });
     } catch (err) {
-      this.handlers.onError?.(err);
+      // A superseded start losing the mic race is not a fault the UI should
+      // report — the start that won is the one that speaks for the mic.
+      if (epoch === this.startEpoch) {
+        this.handlers.onError?.(new ListenError("mic", String(err)));
+      }
       throw err;
     }
+
+    // A stop() or a newer start() landed while we were waiting on the mic.
+    // Release this stream and leave the winner's graph untouched.
+    if (epoch !== this.startEpoch) {
+      stream.getTracks().forEach((t) => t.stop());
+      return;
+    }
+    this.stream = stream;
 
     const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
     this.audioCtx = new AudioCtx({ sampleRate: TARGET_SAMPLE_RATE });
@@ -186,118 +306,29 @@ class DaisyListener {
     this.processor.connect(this.sink);
     this.sink.connect(this.audioCtx.destination);
 
+    // Chromium creates an AudioContext suspended when the page has had no
+    // user gesture, and a suspended context never fires onaudioprocess — the
+    // mic reads as live while no audio is ever captured. Electron's default
+    // autoplay policy exempts it, but a plain `npm run dev` browser tab does
+    // not, so ask for it explicitly.
+    if (this.audioCtx.state === "suspended") {
+      await this.audioCtx.resume().catch(() => {});
+      // resume() is another await, so re-check: a stop() during it has already
+      // torn this graph down and must not be undone by the lines below.
+      if (epoch !== this.startEpoch) return;
+    }
+
     this.noiseFloor = 0.01;
     this.running = true;
     this.setState("listening");
 
-    // Start on the Whisper path, then offer the mic to Apple's on-device
-    // recognizer: it streams partials and returns a transcript the moment you
-    // stop talking, whereas Whisper can only begin decoding once the whole
-    // utterance has been captured. If it comes up it takes over on "ready";
-    // if it never does, nothing changes and Whisper carries on.
     this.startSpeechRecognition();
-    void this.startNative();
-  }
-
-  /**
-   * Attempt to hand transcription to Apple's recognizer via the Electron main
-   * process. Silently leaves `native` false on any platform or build where the
-   * helper isn't present, so the Whisper path stays the default everywhere else.
-   *
-   * Note this never awaits readiness: `native` is flipped on only by the helper's
-   * own "ready" event (see onNativeEvent). Spawning succeeding tells us nothing —
-   * macOS aborts the helper the instant it touches the Speech framework without
-   * permission, which lands *before* start() resolves. Gating on "ready" means a
-   * helper that dies on launch simply never takes over, and Whisper keeps going.
-   */
-  private async startNative(): Promise<void> {
-    const speech = (window as any).daisy?.speech;
-    if (!speech) return;
-
-    const session = ++this.nativeSession;
-    try {
-      const { supported } = await speech.isAvailable();
-      if (!supported || session !== this.nativeSession) return;
-
-      this.nativeUnsubscribe = speech.onEvent((payload: any) => {
-        // Ignore stragglers from a helper belonging to an earlier start().
-        if (session === this.nativeSession) this.onNativeEvent(payload);
-      });
-      const result = await speech.start();
-      if (!result?.ok) this.stopNative();
-    } catch {
-      this.stopNative();
-    }
-  }
-
-  private onNativeEvent(payload: any) {
-    if (!payload || typeof payload !== "object") return;
-
-    switch (payload.type) {
-      case "ready":
-        // The helper cleared permission and is streaming: only now is it safe to
-        // stop feeding the Whisper path.
-        if (this.running) {
-          this.native = true;
-          this.nativePaused = false;
-          this.resetBuffers();
-          if (this.isRecording) this.abortRecording();
-          this.stopSpeechRecognition();
-        }
-        break;
-
-      case "partial":
-        if (!this.native) break;
-        this.partialInterimText = String(payload.text ?? "");
-        this.publishPartialTranscript();
-        break;
-
-      case "final": {
-        if (!this.native) break;
-        const text = String(payload.text ?? "").trim();
-        this.resetPartialTranscript();
-        if (text) this.handlers?.onTranscript(text);
-        break;
-      }
-
-      case "error":
-      case "exit": {
-        // Permission refused, helper crashed, or the recognizer became
-        // unavailable. Whisper is still running on the backend, so fall back to
-        // it. Deliberately *not* routed through onError: the caller treats that
-        // as "voice is broken" and switches listening off, but this is a routine
-        // downgrade and the mic must keep working.
-        const wasNative = this.native;
-        this.native = false;
-        this.nativePaused = false;
-        this.nativeUnsubscribe?.();
-        this.nativeUnsubscribe = null;
-        console.info(
-          `Daisy: native speech unavailable (${payload.code ?? payload.type}); using Whisper`
-        );
-        if (this.running) {
-          if (wasNative) this.resetBuffers();
-          this.startSpeechRecognition();
-        }
-        break;
-      }
-    }
-  }
-
-  private stopNative() {
-    this.nativeSession++;
-    this.nativeUnsubscribe?.();
-    this.nativeUnsubscribe = null;
-    this.native = false;
-    this.nativePaused = false;
-    try {
-      (window as any).daisy?.speech?.stop();
-    } catch {
-      /* main process already gone */
-    }
   }
 
   stop(): void {
+    // Invalidates any start() still waiting on getUserMedia, so it tears its
+    // own stream down instead of coming back to life after we've stopped.
+    this.startEpoch++;
     this.running = false;
     this.isRecording = false;
     this.isTranscribing = false;
@@ -310,7 +341,6 @@ class DaisyListener {
     }
     this.sink?.disconnect();
     this.sink = null;
-    this.stopNative();
     this.stopSpeechRecognition();
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
@@ -447,6 +477,23 @@ class DaisyListener {
     return Math.sqrt(sum / frame.length);
   }
 
+  /**
+   * How far above the noise floor speech has to sit, blended between the
+   * quiet-room and over-music profiles. Knowing a song is playing pins it to
+   * the relaxed end immediately; otherwise the learned floor decides, which
+   * covers the first few seconds before the now-playing poll catches up and
+   * every audio source Daisy has no control over.
+   */
+  private margins(): { start: number; keep: number } {
+    const loudness = this.musicPlaying
+      ? 1
+      : Math.min(1, Math.max(0, (this.noiseFloor - QUIET_FLOOR) / (LOUD_FLOOR - QUIET_FLOOR)));
+    return {
+      start: START_MARGIN + (MUSIC_START_MARGIN - START_MARGIN) * loudness,
+      keep: KEEP_MARGIN + (MUSIC_KEEP_MARGIN - KEEP_MARGIN) * loudness,
+    };
+  }
+
   /** Drives VAD and capture; runs once per audio block on the audio thread. */
   private onAudio = (event: AudioProcessingEvent) => {
     if (!this.running) return;
@@ -456,25 +503,6 @@ class DaisyListener {
     const level = DaisyListener.frameRms(frame);
     this.lastLevel = level;
     const now = performance.now();
-
-    if (this.native) {
-      // Apple's helper owns the mic for recognition; this graph is kept only to
-      // feed the visualizer. All we do here is gate the helper so Daisy never
-      // transcribes her own speech.
-      const blocked = !!this.handlers?.isBlocked?.();
-      if (blocked !== this.nativePaused) {
-        this.nativePaused = blocked;
-        const speech = (window as any).daisy?.speech;
-        if (blocked) {
-          speech?.pause();
-          this.resetPartialTranscript();
-        } else {
-          speech?.resume();
-        }
-        this.setState(blocked ? "idle" : "listening");
-      }
-      return;
-    }
 
     if (this.handlers?.isBlocked?.()) {
       // Daisy is talking — drop everything, including pre-roll, so none of her
@@ -486,8 +514,9 @@ class DaisyListener {
     }
     if (now < this.blockedUntil) return;
 
-    const startThreshold = Math.max(MIN_START_THRESHOLD, this.noiseFloor * START_MARGIN);
-    const keepThreshold = Math.max(MIN_KEEP_THRESHOLD, this.noiseFloor * KEEP_MARGIN);
+    const { start: startMargin, keep: keepMargin } = this.margins();
+    const startThreshold = Math.max(MIN_START_THRESHOLD, this.noiseFloor * startMargin);
+    const keepThreshold = Math.max(MIN_KEEP_THRESHOLD, this.noiseFloor * keepMargin);
 
     if (!this.isRecording) {
       // Track the noise floor only while nobody is speaking.
@@ -511,13 +540,43 @@ class DaisyListener {
 
     this.utterance.push(frame);
     this.utteranceSamples += frame.length;
+    this.utteranceLevelSum += level;
+    this.utteranceLevelCount++;
     if (level > keepThreshold) this.lastVoiceTime = now;
 
+    const gap = now - this.lastVoiceTime;
+    if (gap > this.longestGapMs) this.longestGapMs = gap;
+
     const elapsed = now - this.recordStart;
-    if (now - this.lastVoiceTime > SILENCE_MS || elapsed > MAX_UTTERANCE_MS) {
+
+    // Ran this long without ever pausing: not a person talking. Learn the
+    // level as the new noise floor so the next frame sees a threshold that
+    // sits above it, and drop the clip rather than sending Whisper a
+    // five-second block of song.
+    if (elapsed > SUSTAINED_BACKGROUND_MS && this.longestGapMs < MAX_BACKGROUND_GAP_MS) {
+      this.rebaselineNoiseFloor();
+      this.abortRecording();
+      return;
+    }
+
+    if (gap > SILENCE_MS || elapsed > MAX_UTTERANCE_MS) {
       this.finishRecording(now);
     }
   };
+
+  /**
+   * Adopt the level of whatever we just recorded as the noise floor. Used when
+   * a "recording" turns out to have been steady background, which the
+   * between-utterances EMA can never learn on its own because it only runs
+   * while idle — and background keeps us out of idle.
+   */
+  private rebaselineNoiseFloor() {
+    if (!this.utteranceLevelCount) return;
+    const mean = this.utteranceLevelSum / this.utteranceLevelCount;
+    // Only ever raise the floor here. Lowering it is the idle EMA's job, which
+    // reacts quickly once the room is actually quiet again.
+    this.noiseFloor = Math.max(this.noiseFloor, mean);
+  }
 
   private beginRecording(now: number) {
     this.resetPartialTranscript();
@@ -531,6 +590,9 @@ class DaisyListener {
     this.isRecording = true;
     this.recordStart = now;
     this.lastVoiceTime = now;
+    this.utteranceLevelSum = 0;
+    this.utteranceLevelCount = 0;
+    this.longestGapMs = 0;
     this.setState("recording");
   }
 
@@ -567,14 +629,24 @@ class DaisyListener {
         const { text } = await res.json();
         const clean = (text || "").trim();
         if (clean) this.handlers?.onTranscript(clean);
+      } else {
+        // A failed utterance is not a broken mic: the backend may still be
+        // warming the model, or Whisper may have choked on one clip. Say so and
+        // keep listening rather than switching voice off for the whole session.
+        this.notifyTranscribeFailure(`/api/stt returned ${res.status}`);
       }
     } catch (err) {
-      this.handlers?.onError?.(err);
+      this.notifyTranscribeFailure(String(err));
     } finally {
       this.isTranscribing = false;
       this.resetPartialTranscript();
       if (this.running) this.setState("listening");
     }
+  }
+
+  private notifyTranscribeFailure(detail: string) {
+    console.error(`Daisy STT failed: ${detail}`);
+    this.handlers?.onNotice?.("Couldn't transcribe that — is the backend running?");
   }
 }
 

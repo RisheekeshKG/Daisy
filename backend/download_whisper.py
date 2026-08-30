@@ -1,11 +1,15 @@
 """Download the faster-whisper STT model for Daisy (idempotent).
 
 Run automatically by `npm run backend:setup`. Fetches the converted
-CTranslate2 "small.en" model (~480MB) into backend/whisper-model/ so the
+CTranslate2 "base.en" model (~140MB) into backend/whisper-model/ so the
 packaged app can transcribe speech fully offline, instead of faster-whisper
 silently reaching out to the Hugging Face Hub on the first STT request.
 
-Set DAISY_WHISPER_SIZE=base.en for a smaller/faster (less accurate) download.
+base.en matches the default in main.py, which picks it for latency: on a
+10-core Mac a 2s utterance decodes in ~2-3s with base.en versus ~11-13s with
+medium.en, and this directory takes priority over that default once populated.
+Set DAISY_WHISPER_SIZE=small.en (or medium.en) for a larger, more accurate and
+correspondingly slower model.
 """
 import os
 import shutil
@@ -22,7 +26,7 @@ except ImportError:
     SSL_CONTEXT = None
 
 MODEL_DIR = Path(__file__).resolve().parent / "whisper-model"
-SIZE = os.environ.get("DAISY_WHISPER_SIZE", "medium.en")
+SIZE = os.environ.get("DAISY_WHISPER_SIZE", "base.en")
 BASE_URL = f"https://huggingface.co/Systran/faster-whisper-{SIZE}/resolve/main"
 FILES = ["model.bin", "config.json", "tokenizer.json", "vocabulary.txt"]
 # Records which size currently sits in MODEL_DIR, so switching sizes re-downloads

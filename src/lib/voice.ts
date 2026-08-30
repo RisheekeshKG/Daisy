@@ -35,7 +35,6 @@ function emotionAdjust(text: string): { pitch: number; rate: number } {
 
 class DaisyVoiceEngine {
   private isVoiceEnabled: boolean = true;
-  private isAnimeMode: boolean = false;
   private currentUtterance: SpeechSynthesisUtterance | null = null;
   private onSpeakingStateChange: ((speaking: boolean) => void) | null = null;
   private voicesCache: SpeechSynthesisVoice[] = [];
@@ -55,11 +54,6 @@ class DaisyVoiceEngine {
     if (savedVoice !== null) {
       this.isVoiceEnabled = savedVoice === "true";
     }
-    const savedAnime = localStorage.getItem("daisy_anime_voice_enabled");
-    if (savedAnime !== null) {
-      this.isAnimeMode = savedAnime === "true";
-    }
-
     if (typeof window !== "undefined" && window.speechSynthesis) {
       // Voices frequently aren't populated synchronously on first load
       // (a well-known Web Speech API quirk) — cache them as they arrive.
@@ -139,15 +133,6 @@ class DaisyVoiceEngine {
     if (!enabled) {
       this.cancel();
     }
-  }
-
-  getAnimeMode() {
-    return this.isAnimeMode;
-  }
-
-  setAnimeMode(enabled: boolean) {
-    this.isAnimeMode = enabled;
-    localStorage.setItem("daisy_anime_voice_enabled", String(enabled));
   }
 
   cancel() {
@@ -232,30 +217,6 @@ class DaisyVoiceEngine {
     if (!cleanText.trim()) {
       this.releaseBusy(token);
       return;
-    }
-
-    // Add an energetic, emotional English interjection when in expressive mode!
-    if (this.isAnimeMode) {
-      const prefixes = [
-        "Yay! ",
-        "Ooh! ",
-        "Yes! ",
-        "Woohoo! ",
-        "Okay! ",
-        "Alright! ",
-        "Hehe! ",
-        "Got it! ",
-        "Ooh, yay! ",
-        "Awesome! ",
-      ];
-      // Pick a prefix based on the text length so it's consistent but varied
-      const index = Math.abs(cleanText.length) % prefixes.length;
-      cleanText = prefixes[index] + cleanText;
-
-      // Keep the energy up with an exclamation ending
-      if (!cleanText.endsWith("!") && !cleanText.endsWith("?")) {
-        cleanText += "!";
-      }
     }
 
     // Always prefer the backend's neural girl voice (Piper). It's local and
@@ -361,7 +322,7 @@ class DaisyVoiceEngine {
       // Natural girl voice at normal speed, with only subtle emotional lift
       // so it stays clear and pleasant (no chipmunk, no rushing).
       const emotion = emotionAdjust(cleanText);
-      const basePitch = this.isAnimeMode ? 1.15 : 1.1; // gently bright, girlish
+      const basePitch = 1.1;                            // gently bright, girlish
       const baseRate = 1.1;                             // a touch quicker, lively
 
       utterance.pitch = Math.min(2, Math.max(0, basePitch + emotion.pitch));

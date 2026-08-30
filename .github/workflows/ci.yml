@@ -1,0 +1,37 @@
+name: CI
+
+# Everything the release gate runs, but on ordinary pushes and PRs — so a
+# regression surfaces on the branch rather than at the moment you tag.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install backend dependencies
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/python -m pip install --upgrade pip
+          backend/.venv/bin/pip install -r backend/requirements.txt
+
+      # Type-check, frontend units, backend units. No models needed: the STT
+      # tests stub the engine rather than loading real weights.
+      - run: npm run lint
+      - run: npm test
+      - run: npm run backend:test
+      - run: npm run build

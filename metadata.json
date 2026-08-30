@@ -1,6 +1,0 @@
-{
-  "name": "Jarvis Workspace",
-  "description": "A premium, glossy, offline-first personal hub combining Spotify-style music, Notion-style secure notes, and a structured calendar with an intelligent Jarvis AI agent.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

@@ -1,0 +1,79 @@
+<svg width="512" height="512" viewBox="0 0 512 512" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="512" y2="512" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFDF7" />
+      <stop offset="50%" stop-color="#F9F6EE" />
+      <stop offset="100%" stop-color="#EFECE3" />
+    </linearGradient>
+    <linearGradient id="glassHighlight" x1="0" y1="0" x2="0" y2="256" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#FFFFFF" stop-opacity="0" />
+    </linearGradient>
+    <linearGradient id="botHeadGrad" x1="100" y1="120" x2="412" y2="380" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FFFFFF" />
+      <stop offset="100%" stop-color="#E2E0D8" />
+    </linearGradient>
+    <linearGradient id="screenGrad" x1="140" y1="170" x2="370" y2="330" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#1A1918" />
+      <stop offset="100%" stop-color="#0B0A0A" />
+    </linearGradient>
+    <radialGradient id="flowerCenter" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FBBF24" />
+      <stop offset="100%" stop-color="#D97706" />
+    </radialGradient>
+    <linearGradient id="ribbonGrad" x1="0" y1="0" x2="40" y2="40" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#F59E0B" />
+      <stop offset="100%" stop-color="#D97706" />
+    </linearGradient>
+    <filter id="shadowHeavy" x="-10%" y="-10%" width="130%" height="130%">
+      <feDropShadow dx="0" dy="20" stdDeviation="18" flood-color="#1A1918" flood-opacity="0.15" />
+      <feDropShadow dx="0" dy="6" stdDeviation="6" flood-color="#1A1918" flood-opacity="0.10" />
+    </filter>
+    <filter id="screenGlow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#FBBF24" flood-opacity="0.5" />
+    </filter>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bgGrad)" filter="url(#shadowHeavy)" />
+  <rect x="16" y="16" width="480" height="480" rx="108" stroke="#FFFFFF" stroke-width="8" stroke-opacity="0.8" fill="none" />
+  <path d="M 16 124 C 16 64.71 64.71 16 124 16 L 388 16 C 447.29 16 496 64.71 496 124 L 496 220 C 350 240 160 220 16 150 Z" fill="url(#glassHighlight)" />
+  <g filter="url(#shadowHeavy)">
+    <rect x="180" y="375" width="44" height="45" rx="22" fill="#D1CEC3" stroke="#B8B4A6" stroke-width="3" />
+    <rect x="288" y="375" width="44" height="45" rx="22" fill="#D1CEC3" stroke="#B8B4A6" stroke-width="3" />
+  </g>
+  <rect x="96" y="120" width="320" height="260" rx="64" fill="url(#botHeadGrad)" stroke="#D4D0C5" stroke-width="6" filter="url(#shadowHeavy)" />
+  <rect x="128" y="152" width="256" height="196" rx="44" fill="url(#screenGrad)" stroke="#282624" stroke-width="4" />
+  <path d="M 136 180 C 180 162 330 162 376 180 C 370 162 350 158 320 158 L 190 158 C 160 158 142 162 136 180 Z" fill="#FFFFFF" fill-opacity="0.12" />
+  <g stroke="#FBBF24" stroke-width="12" stroke-linecap="round" stroke-linejoin="round" filter="url(#screenGlow)">
+    <path d="M 190 232 L 218 248 L 190 264" fill="none" />
+    <circle cx="256" cy="252" r="5" fill="#FBBF24" stroke="none" />
+    <path d="M 322 232 L 294 248 L 322 264" fill="none" />
+  </g>
+  <g transform="translate(108, 92)" filter="url(#shadowHeavy)">
+    <path d="M 12 18 C 0 8 -4 30 14 26 Z" fill="url(#ribbonGrad)" />
+    <path d="M 32 18 C 44 8 48 30 30 26 Z" fill="url(#ribbonGrad)" />
+    <circle cx="22" cy="22" r="6" fill="#F59E0B" stroke="#B45309" stroke-width="2" />
+  </g>
+  <g transform="translate(365, 88)" filter="url(#shadowHeavy)">
+    <ellipse cx="28" cy="8" rx="7" ry="14" fill="#FFFFFF" stroke="#E2E0D8" stroke-width="1.5" />
+    <ellipse cx="28" cy="48" rx="7" ry="14" fill="#FFFFFF" stroke="#E2E0D8" stroke-width="1.5" />
+    <ellipse cx="8" cy="28" rx="14" ry="7" fill="#FFFFFF" stroke="#E2E0D8" stroke-width="1.5" />
+    <ellipse cx="48" cy="28" rx="14" ry="7" fill="#FFFFFF" stroke="#E2E0D8" stroke-width="1.5" />
+    <g transform="rotate(30 28 28)">
+      <ellipse cx="28" cy="8" rx="7" ry="14" fill="#FFFFFF" stroke="#E2E0D8" stroke-width="1.5" />
+      <ellipse cx="28" cy="48" rx="7" ry="14" fill="#FFFFFF" stroke="#E2E0D8" stroke-width="1.5" />
+      <ellipse cx="8" cy="28" rx="14" ry="7" fill="#FFFFFF" stroke="#E2E0D8" stroke-width="1.5" />
+      <ellipse cx="48" cy="28" rx="14" ry="7" fill="#FFFFFF" stroke="#E2E0D8" stroke-width="1.5" />
+    </g>
+    <g transform="rotate(60 28 28)">
+      <ellipse cx="28" cy="8" rx="7" ry="14" fill="#FFFFFF" stroke="#E2E0D8" stroke-width="1.5" />
+      <ellipse cx="28" cy="48" rx="7" ry="14" fill="#FFFFFF" stroke="#E2E0D8" stroke-width="1.5" />
+      <ellipse cx="8" cy="28" rx="14" ry="7" fill="#FFFFFF" stroke="#E2E0D8" stroke-width="1.5" />
+      <ellipse cx="48" cy="28" rx="14" ry="7" fill="#FFFFFF" stroke="#E2E0D8" stroke-width="1.5" />
+    </g>
+    <circle cx="28" cy="28" r="12" fill="url(#flowerCenter)" stroke="#B45309" stroke-width="2" />
+    <circle cx="24" cy="26" r="1.5" fill="#78350F" />
+    <circle cx="32" cy="26" r="1.5" fill="#78350F" />
+    <circle cx="24" cy="30" r="1.5" fill="#78350F" />
+    <circle cx="32" cy="30" r="1.5" fill="#78350F" />
+  </g>
+</svg>

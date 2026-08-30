@@ -3,6 +3,7 @@ import { Send, Bot, User, Sparkles, Terminal, Activity, ShieldAlert, Volume2, Vo
 import { motion, AnimatePresence } from "motion/react";
 import { ChatMessage } from "../types";
 import { daisyVoice } from "../lib/voice";
+import { getUserName } from "../lib/userName";
 
 export function DaisyFlower({ className = "w-4 h-4" }: { className?: string }) {
   return (
@@ -95,7 +96,7 @@ export function DaisyMascotAvatar({ className = "w-10 h-10" }: { className?: str
   );
 }
 
-export function DigitalMascotFace({ expression }: { expression: string }) {
+function DigitalMascotFace({ expression }: { expression: string }) {
   const size = "w-full h-full";
   switch (expression) {
     case ">.<":
@@ -415,6 +416,7 @@ export default function DaisyAgent({
         notesCount,
         eventsCount,
         currentTrack: currentTrackTitle || "None",
+        userName: getUserName(),
       };
 
       const response = await fetch("/api/daisy", {
@@ -510,16 +512,38 @@ export default function DaisyAgent({
               Active
             </span>
           </div>
+          <div className="w-px h-6 bg-zinc-200" />
+          {/* Voice mute toggle — the one control kept from the old mascot panel. */}
+          <button
+            onClick={() => {
+              const next = !voiceEnabled;
+              setVoiceEnabled(next);
+              daisyVoice.setEnabled(next);
+              if (next) daisyVoice.speak("Voice on.", true);
+            }}
+            title={voiceEnabled ? "Mute Daisy's voice" : "Unmute Daisy's voice"}
+            className={`p-2 rounded-xl border transition-all cursor-pointer ${
+              voiceEnabled
+                ? "bg-amber-50 border-amber-200 text-amber-600"
+                : "bg-zinc-50 border-zinc-200 text-zinc-400"
+            }`}
+          >
+            {voiceEnabled ? (
+              <Volume2 className={`w-4 h-4 ${isSpeaking ? "animate-pulse" : ""}`} />
+            ) : (
+              <VolumeX className="w-4 h-4" />
+            )}
+          </button>
         </div>
       </div>
 
       <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-6 min-h-0">
         {/* Left Side: Daisy Interactive Robot Mascot */}
-        <div className="lg:col-span-4 flex flex-col items-center justify-between bg-zinc-50/80 border border-zinc-200/60 rounded-[28px] p-5 relative overflow-hidden shadow-inner min-h-[360px]">
+        <div className="lg:col-span-4 flex flex-col items-center justify-center bg-zinc-50/80 border border-zinc-200/60 rounded-[28px] p-5 relative overflow-hidden shadow-inner min-h-[360px]">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_50%_0%,rgba(251,191,36,0.06),transparent)] pointer-events-none" />
-          
+
           {/* Section Heading */}
-          <div className="text-center z-10 w-full">
+          <div className="absolute top-5 left-0 right-0 text-center z-10 w-full">
             <span className="text-[10px] font-extrabold tracking-widest text-amber-600 bg-amber-100/60 px-2.5 py-1 rounded-full uppercase">
               Daisy Interactive Mascot
             </span>
@@ -590,145 +614,6 @@ export default function DaisyAgent({
             </span>
           </motion.div>
 
-          {/* Status and Expressions Toolbar */}
-          <div className="w-full text-center z-10">
-            <p className="text-[10px] text-zinc-500 font-extrabold uppercase mt-1 flex items-center justify-center gap-1.5">
-              {isThinking ? (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping" />
-                  <span>Thinking: O.O</span>
-                </>
-              ) : (
-                <>
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span>Reacted: {expressionOverride || mascotExpression}</span>
-                </>
-              )}
-            </p>
-
-            {/* Expression Toolbar Selector */}
-            <div className="mt-3.5 border-t border-zinc-200/60 pt-3">
-              <span className="text-[9px] text-zinc-400 font-extrabold uppercase tracking-widest block mb-2">
-                Mascot Express Play
-              </span>
-              <div className="flex flex-wrap justify-center gap-1.5">
-                {[
-                  { expr: ">.<", label: "Cute" },
-                  { expr: "^-^", label: "Happy" },
-                  { expr: "*.*", label: "Star" },
-                  { expr: "O.O", label: "Whoa" },
-                  { expr: ";-;", label: "Sob" },
-                  { expr: "u_u", label: "Snooze" },
-                ].map((item) => (
-                  <button
-                    key={item.expr}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setExpressionOverride(item.expr);
-                    }}
-                    className={`text-[10px] font-mono px-2 py-1 rounded-lg border transition-all cursor-pointer font-bold ${
-                      (expressionOverride || mascotExpression) === item.expr
-                        ? "bg-amber-100 border-amber-300 text-amber-700 shadow-sm"
-                        : "bg-white border-zinc-200 text-zinc-600 hover:bg-zinc-100"
-                    }`}
-                    title={`Make Daisy say: ${item.expr}`}
-                  >
-                    {item.expr}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Energetic Speech Engine Controls */}
-            <div className="mt-4 border-t border-zinc-200/60 pt-3.5 w-full">
-              <div className="flex items-center justify-between mb-2 px-1">
-                <span className="text-[9px] text-zinc-400 font-extrabold uppercase tracking-widest">
-                  Daisy Speech Engine
-                </span>
-                {isSpeaking && (
-                  <span className="text-[8px] bg-amber-100 text-amber-700 font-mono px-1.5 py-0.5 rounded animate-pulse">
-                    TALKING
-                  </span>
-                )}
-              </div>
-              
-              <div className="bg-white border border-zinc-200/80 rounded-2xl p-3 shadow-sm flex flex-col gap-2.5">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        const next = !voiceEnabled;
-                        setVoiceEnabled(next);
-                        daisyVoice.setEnabled(next);
-                        if (next) {
-                          daisyVoice.speak("Voice activated.", true);
-                        }
-                      }}
-                      className={`p-2 rounded-xl border transition-all cursor-pointer ${
-                        voiceEnabled 
-                          ? "bg-amber-50 border-amber-200 text-amber-600 shadow-inner" 
-                          : "bg-zinc-50 border-zinc-200 text-zinc-400"
-                      }`}
-                      title={voiceEnabled ? "Mute Daisy's voice" : "Unmute Daisy's voice"}
-                    >
-                      {voiceEnabled ? <Volume2 className="w-4 h-4 animate-bounce" /> : <VolumeX className="w-4 h-4" />}
-                    </button>
-                    <div className="flex flex-col">
-                      <span className="text-[11px] font-bold text-zinc-800">
-                        {voiceEnabled ? "Daisy Girl Voice ON" : "Voice Muted"}
-                      </span>
-                      <span className="text-[8.5px] font-medium text-zinc-500 leading-none">
-                        Warm neural voice · runs locally 🌸✨
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Pulsing Voice Equalizer when speaking */}
-                  <div className="flex items-end gap-0.5 h-4 px-1.5">
-                    {[1, 2, 3, 4, 5].map((i) => (
-                      <span
-                        key={i}
-                        className={`w-0.75 bg-amber-500 rounded-full transition-all duration-300 ${
-                          isSpeaking 
-                            ? "h-3.5" 
-                            : "h-1 opacity-45"
-                        }`}
-                        style={{
-                          height: isSpeaking ? `${3 + (i * 2.5) % 11}px` : "4px",
-                          animation: isSpeaking ? `pulse 0.6s infinite ease-in-out alternate` : undefined,
-                          animationDelay: isSpeaking ? `${i * 100}ms` : undefined
-                        }}
-                      />
-                    ))}
-                  </div>
-                </div>
-
-                {/* Quick Trigger Phrases */}
-                <div className="grid grid-cols-2 gap-1.5">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      daisyVoice.speak("Hey, good to see you. Let's get to work.", true);
-                    }}
-                    className="text-[9.5px] bg-zinc-50 hover:bg-amber-50 border border-zinc-150 hover:border-amber-200 text-zinc-600 hover:text-amber-700 py-1 px-2 rounded-lg cursor-pointer transition-all text-center font-bold"
-                  >
-                    🌸 Yay, Greeting
-                  </button>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      daisyVoice.speak("All done, your workspace is synced and ready.", true);
-                    }}
-                    className="text-[9.5px] bg-zinc-50 hover:bg-amber-50 border border-zinc-150 hover:border-amber-200 text-zinc-600 hover:text-amber-700 py-1 px-2 rounded-lg cursor-pointer transition-all text-center font-bold"
-                  >
-                    🔒 Security Sync
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-          
           {/* Simulated scanning line across left panel */}
           <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-amber-400/15 to-transparent animate-[scan_3s_infinite_linear]" />
         </div>
@@ -774,7 +659,7 @@ export default function DaisyAgent({
                           <button
                             onClick={() => daisyVoice.speak(msg.text, true)}
                             className="absolute right-0 top-0.5 p-1 rounded hover:bg-zinc-200 text-zinc-400 hover:text-amber-500 transition-colors cursor-pointer"
-                            title="Replay in Anime Voice"
+                            title="Replay"
                           >
                             <Volume2 className="w-3.5 h-3.5" />
                           </button>
