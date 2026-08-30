@@ -41,17 +41,17 @@ def main() -> int:
     if installed is None and (MODEL_DIR / "model.bin").exists():
         installed = "unknown (unstamped)"
     if installed and installed != SIZE:
-        print(f"Replacing installed model ({installed}) with {SIZE} …")
+        print(f"Replacing installed model ({installed}) with {SIZE} ...")
         shutil.rmtree(MODEL_DIR, ignore_errors=True)
 
     MODEL_DIR.mkdir(exist_ok=True)
     for name in FILES:
         dest = MODEL_DIR / name
         if dest.exists() and dest.stat().st_size > 0:
-            print(f"✓ already present: {name}")
+            print(f"already present: {name}")
             continue
         url = f"{BASE_URL}/{name}"
-        print(f"↓ downloading {name} …")
+        print(f"downloading {name} ...")
         tmp = dest.with_suffix(dest.suffix + ".part")
         try:
             # Stream to a temp file: model.bin is ~480MB, and a partial write must

@@ -17,10 +17,10 @@ def main() -> int:
     for name in FILES:
         dest = VOICES_DIR / name
         if dest.exists() and dest.stat().st_size > 0:
-            print(f"✓ already present: {name}")
+            print(f"already present: {name}")
             continue
         url = f"{BASE_URL}/{name}"
-        print(f"↓ downloading {name} …")
+        print(f"downloading {name} ...")
         try:
             urllib.request.urlretrieve(url, dest)
         except Exception as err:  # noqa: BLE001

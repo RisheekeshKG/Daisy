@@ -31,6 +31,19 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
+# Windows consoles default to a legacy codepage (cp1252), which raises
+# UnicodeEncodeError on any character outside it. This process prints things it
+# does not control the alphabet of -- transcripts, song titles, mail subjects,
+# exception text -- so a stray accent or emoji would otherwise take the backend
+# down mid-request. Degrade those characters instead of dying on them.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, OSError):
+        # Detached or already-wrapped streams (PyInstaller windowed builds)
+        # have nothing to reconfigure; printing simply stays as it was.
+        pass
+
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -717,7 +730,7 @@ async def tts(request: Request):
         audio = await run_in_threadpool(synth_piper, text)
         return Response(content=audio, media_type="audio/wav")
     except Exception as piper_err:  # noqa: BLE001
-        print(f"Piper TTS unavailable ({piper_err}); trying macOS say…")
+        print(f"Piper TTS unavailable ({piper_err}); trying macOS say...")
 
     try:
         audio = await run_in_threadpool(synth_say, text)

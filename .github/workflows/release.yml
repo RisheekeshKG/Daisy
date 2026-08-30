@@ -15,6 +15,9 @@ env:
   # Nothing here is signed. Without this electron-builder finds no identity,
   # tries anyway, and fails the job instead of emitting an unsigned build.
   CSC_IDENTITY_AUTO_DISCOVERY: false
+  # Windows runners default stdout to cp1252, which raises UnicodeEncodeError
+  # on any character outside it and fails the step.
+  PYTHONIOENCODING: utf-8
 
 jobs:
   # Gate the build on the suites. A tag that cannot pass tests should never
